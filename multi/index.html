@@ -65,6 +65,16 @@ video{width:100%;max-height:45vh;border-radius:10px;background:#000;object-fit:c
 a.dl{display:inline-block;padding:11px 16px;border-radius:10px;background:var(--ok);color:#fff;text-decoration:none;font-weight:600}
 .sessions{display:flex;flex-direction:column;gap:10px}
 .preview img{max-width:100%;border-radius:8px}
+.check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg)}
+.check input{width:18px;height:18px}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--well)}
+td.num,th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+tbody tr:last-child td{border-bottom:0}
+button.del{padding:4px 10px;font-size:12px}
+input:disabled{opacity:.5}
 </style>
 </head>
 <body>
@@ -161,9 +171,38 @@ a.dl{display:inline-block;padding:11px 16px;border-radius:10px;background:var(--
     </div>
     <p class="note" id="detected">Scheme: not detected yet.</p>
   </div>
+  <div class="panel" id="expPanel">
+    <span class="step">Experiment log</span>
+    <p class="note">Record labelled runs for statistics. Each run starts decoding from scratch, logs every frame and every QR code read, and is kept on this phone until you clear it.</p>
+    <div class="fields">
+      <label for="runLabel">Run label<input id="runLabel" placeholder="e.g. phone A, 3 colors × 2 tiles"></label>
+      <label for="runDist">Distance to screen (m)<input id="runDist" type="number" step="0.05" min="0" inputmode="decimal" placeholder="1.0"></label>
+      <label for="runStop">Stop the run<select id="runStop"><option value="time" selected>After a set time</option><option value="done">When all files are received</option><option value="manual">Manually</option></select></label>
+      <label for="runSecs"><span>Duration (s)</span><input id="runSecs" type="number" value="30" min="5" max="900"></label>
+    </div>
+    <label class="filerow" for="runNotes">Notes<input id="runNotes" placeholder="Lighting, viewing angle, screen brightness…"></label>
+    <label class="check" for="runMer"><input type="checkbox" id="runMer" checked> Measure raw module error rate (adds some processing per frame)</label>
+    <div class="actions"><button class="primary" id="btnRun">Start run</button></div>
+    <p class="note" id="runStatus">No run in progress.</p>
+  </div>
   <video id="video" playsinline muted></video>
   <div class="readout" id="rxStats"></div>
   <div class="sessions" id="sessions"></div>
+  <div class="panel" id="runsPanel">
+    <span class="step">Recorded runs</span>
+    <div class="tablewrap" id="runsWrap" hidden>
+      <table>
+        <thead><tr><th class="num">#</th><th>Label</th><th class="num">Dist. (m)</th><th>Scheme</th><th class="num">Time (s)</th>
+          <th class="num">Frame loss</th><th class="num">Module errors</th><th class="num">Files</th><th class="num">Completion (s)</th><th></th></tr></thead>
+        <tbody id="runsBody"></tbody>
+      </table>
+    </div>
+    <p class="note">Frame loss is averaged over the streams in a run. Module errors are raw, before QR error correction. The dataset holds every frame and QR read. To turn it into figures and tables, run the <a href="https://github.com/amro2021/qr-transfer/blob/main/analysis/analyze_qr_lab.py" target="_blank" rel="noopener">analysis script</a>.</p>
+    <div class="actions">
+      <button class="primary" id="btnExport" disabled>Download dataset (.zip)</button>
+      <button id="btnClearRuns" disabled>Clear saved runs</button>
+    </div>
+  </div>
 </section>
 </main>
 
@@ -172,8 +211,9 @@ a.dl{display:inline-block;padding:11px 16px;border-radius:10px;background:var(--
    PROTOCOL F3
    Data : F3|<id>|<j>|<K>|<B>|<size>|<tag>|<base64 payload>
    Info : F3|<id>|M|<uri name>|<mime>|<sha256>|<tag>
-   tag  : m=<S|D|N>,c=<colors>,t=<tiles>,s=<slot>[,a=<base amplitude>]
-          slot = R0,G1,L2 … (channel + tile index) or base / enh
+   tag  : m=<S|D|N>,c=<colors>,t=<tiles>,s=<slot>[,a=<base amplitude>],e=<QR ECC>,f=<sender fps>,k=<sender frame no., base 36>
+          slot = R0,G1,L2 … (channel + tile index) or base / enh (b / e in the short layered tags)
+          k lets the receiver count exactly which sender frames it missed (frame loss per channel)
    Each file is its own LT fountain stream (systematic first K packets,
    then Robust-Soliton LT packets seeded by j).
    ===================================================================== */
@@ -236,7 +276,7 @@ function invalidate(){pause();plan=null;$('btnPlay').disabled=true;$('btnFull').
 document.querySelectorAll('input[name=mode]').forEach(r=>r.onchange=()=>{
   const m=mode(); $('cfgS').hidden=m!=='S'; $('cfgD').hidden=m!=='D'; $('cfgN').hidden=m!=='N'; invalidate();
 });
-['sColors','sTiles','nAc','nBc','nBf','blk','ecc'].forEach(id=>$(id).onchange=invalidate);
+['sColors','sTiles','nAc','nBc','nBf','blk','ecc','fps','every'].forEach(id=>$(id).onchange=invalidate);
 
 $('fS').onchange=async e=>{files.S=e.target.files[0]?await readFile(e.target.files[0]):null;invalidate();};
 $('nBase').onchange=async e=>{files.N.base=e.target.files[0]?await readFile(e.target.files[0]):null;invalidate();};
@@ -283,7 +323,7 @@ function encText(enc,tag,allowInfo,shortTag){
 function buildPlan(){
   const m=mode(), B=+$('blk').value;
   const p={mode:m,colors:1,tiles:1,ac:0,streams:[]};
-  const tagOf=(slot)=>`m=${p.mode},c=${p.colors},t=${p.tiles},s=${slot}`+(p.mode==='N'?`,a=${p.ac}`:'');
+  const tagOf=(slot)=>`m=${p.mode},c=${p.colors},t=${p.tiles},s=${slot}`+(p.mode==='N'?`,a=${p.ac}`:'')+`,e=${$('ecc').value},f=${+$('fps').value}`;
   if(m==='S'){
     p.colors=+$('sColors').value; p.tiles=+$('sTiles').value;
     const enc=makeEnc(files.S,B), chans=p.colors===3?['R','G','B']:['L'], slots=[];
@@ -301,8 +341,8 @@ function buildPlan(){
     }
   }else{
     p.ac=+$('nAc').value;
-    p.streams.push({enc:makeEnc(files.N.base,+$('nBc').value),slots:[{layer:'c',info:true,tag:tagOf('base'),short:'m=N,s=b'}]});
-    p.streams.push({enc:makeEnc(files.N.enh,+$('nBf').value),slots:[{layer:'f',info:true,tag:tagOf('enh'),short:'m=N,s=e'}]});
+    p.streams.push({enc:makeEnc(files.N.base,+$('nBc').value),slots:[{layer:'c',info:true,tag:tagOf('base'),short:`m=N,s=b,a=${p.ac}`}]});
+    p.streams.push({enc:makeEnc(files.N.enh,+$('nBf').value),slots:[{layer:'f',info:true,tag:tagOf('enh'),short:`m=N,s=e,a=${p.ac}`}]});
   }
   return p;
 }
@@ -343,8 +383,8 @@ function compose(items,p){
   ctx.putImageData(img,0,0);
 }
 function frameItems(p){
-  const items=[];
-  for(const st of p.streams) for(const sl of st.slots) items.push({...sl,mat:matrix(encText(st.enc,sl.tag,sl.info,sl.short))});
+  const items=[], k=',k='+frameNo.toString(36);   // sender frame counter in every QR
+  for(const st of p.streams) for(const sl of st.slots) items.push({...sl,mat:matrix(encText(st.enc,sl.tag+k,sl.info,sl.short?sl.short+k:undefined))});
   return items;
 }
 
@@ -398,7 +438,8 @@ async function startCam(){
 }
 function stopCam(){scanning=false;stream?.getTracks().forEach(t=>t.stop());stream=null;$('btnCam').disabled=false;$('btnCamStop').disabled=true;}
 $('btnCam').onclick=startCam; $('btnCamStop').onclick=stopCam;
-$('btnReset').onclick=()=>{sessions.clear();learned=null;$('sessions').innerHTML='';$('rxStats').innerHTML='';$('detected').textContent='Scheme: not detected yet.';sicIdx=nomaFails=nomaFineOk=nomaCoarseOk=0;};
+function resetDecoding(){sessions.clear();learned=null;$('sessions').innerHTML='';$('rxStats').innerHTML='';$('detected').textContent='Scheme: not detected yet.';sicIdx=nomaFails=nomaFineOk=nomaCoarseOk=0;procFrames=0;rxT0=performance.now();}
+$('btnReset').onclick=()=>{ if(!run) resetDecoding(); };
 
 function getBuf(i,w,h){ if(!bufs[i]||bufs[i].width!==w||bufs[i].height!==h) bufs[i]=new ImageData(w,h); return bufs[i]; }
 
@@ -433,20 +474,29 @@ function boxFromCorners(pts,w,h,pad){
   const px=(x1-x0)*pad, py=(y1-y0)*pad;
   return {x0:Math.max(0,Math.floor(x0-px)),y0:Math.max(0,Math.floor(y0-py)),x1:Math.min(w,Math.ceil(x1+px)),y1:Math.min(h,Math.ceil(y1+py))};
 }
-/* decode up to `max` QR codes from a binary image; returns [{text,box}] */
-async function decodeAll(img,w,h,max){
+/* decode up to `max` QR codes from a binary image. onCode(text, corners, img, w, h, n) runs for each
+   code before it is masked out, so measurements use exactly the image the decoder saw */
+function cornersOf(pts){ return {tl:pts[0],tr:pts[1],br:pts[2],bl:pts[3]}; }
+async function decodeAll(img,w,h,max,onCode){
   if(detector){
     try{
       const r=await detector.detect(img);
-      return r.slice(0,max).map(x=>({text:x.rawValue,box:boxFromCorners(x.cornerPoints&&x.cornerPoints.length?x.cornerPoints:[{x:x.boundingBox.x,y:x.boundingBox.y},{x:x.boundingBox.x+x.boundingBox.width,y:x.boundingBox.y+x.boundingBox.height}],w,h,0.02)}));
+      return r.slice(0,max).map(x=>{
+        const bb=x.boundingBox, cp=x.cornerPoints&&x.cornerPoints.length===4?x.cornerPoints
+          :[{x:bb.x,y:bb.y},{x:bb.x+bb.width,y:bb.y},{x:bb.x+bb.width,y:bb.y+bb.height},{x:bb.x,y:bb.y+bb.height}];
+        const corners=cornersOf(cp);
+        if(onCode) onCode(x.rawValue,corners,img,w,h,null);
+        return {text:x.rawValue,corners,box:boxFromCorners(cp,w,h,0.02)};
+      });
     }catch(e){}
   }
   const out=[];
   for(let k=0;k<max;k++){
     const c=jsQR(img.data,w,h,{inversionAttempts:'dontInvert'}); if(!c) break;
-    const L=c.location, box=boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0.02);
-    out.push({text:c.data,box});
-    if(k<max-1) whiteout(img,w,h,boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0.12));
+    const L=c.location, pts=[L.topLeftCorner,L.topRightCorner,L.bottomRightCorner,L.bottomLeftCorner], corners=cornersOf(pts);
+    if(onCode) onCode(c.data,corners,img,w,h,17+4*c.version);
+    out.push({text:c.data,corners,box:boxFromCorners(pts,w,h,0.02)});
+    if(k<max-1) whiteout(img,w,h,boxFromCorners(pts,w,h,0.12));
   }
   return out;
 }
@@ -460,11 +510,7 @@ async function scanLoop(){
     if(work.width!==w||work.height!==h){work.width=w;work.height=h;}
     wctx.drawImage(v,0,0,w,h);
     const frame=wctx.getImageData(0,0,w,h);
-    try{
-      if(learned&&learned.mode==='N') await decodeLayered(frame,w,h);
-      else await decodeMultiplexed(frame,w,h);
-    }catch(e){}
-    procFrames++;
+    await processFrame(frame,w,h);
     renderSessions();
   }
   requestAnimationFrame(scanLoop);
@@ -493,13 +539,11 @@ async function decodeMultiplexed(frame,w,h){
     const img=binarize(vals,w,h,(lo+hi)/2,getBuf(i,w,h));
     let found=0;
     if(detector||tiles===1){
-      const res=await decodeAll(img,w,h,detector?8:1); found=res.length;
-      for(const r of res) handleText(r.text);
+      const res=await decodeAll(img,w,h,detector?8:1,onDecoded); found=res.length;
     }
     if(!detector&&(tiles>1||(!learned&&!found))){
       for(const [x0,y0,x1,y1] of regions(w,h,learned?tiles:4)){
-        const res=await decodeAll(crop(img,w,x0,y0,x1,y1),x1-x0,y1-y0,1);
-        for(const r of res) handleText(r.text);
+        await decodeAll(crop(img,w,x0,y0,x1,y1),x1-x0,y1-y0,1,onDecoded);
       }
     }
     if(learned&&learned.mode==='N') return;          // switched scheme mid-frame
@@ -542,8 +586,9 @@ async function decodeLayered(frame,w,h){
   const coarseImg=binarize(Y,w,h,(g.lo+g.hi)/2,getBuf(0,w,h));
   const c=jsQR(coarseImg.data,w,h,{inversionAttempts:'dontInvert'});
   if(!c) return;
-  handleText(c.data); nomaCoarseOk++;
   const L=c.location, n=17+4*c.version;
+  onDecoded(c.data,cornersOf([L.topLeftCorner,L.topRightCorner,L.bottomRightCorner,L.bottomLeftCorner]),coarseImg,w,h,n);
+  nomaCoarseOk++; if(FRAME) FRAME.base=1;
   const box=boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0.04);
   const {lo,hi}=percentiles(Y,w,boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0)), span=Math.max(16,hi-lo);
   const ac=learned.a||170, af=255-ac, tc=255-(ac+af)/2;
@@ -583,10 +628,12 @@ async function decodeLayered(frame,w,h){
     let s=0,k=0; for(let dy=-1;dy<=1;dy++){const yy=y+dy; if(yy<0||yy>=bh) continue; for(let dx=-1;dx<=1;dx++){const xx=x+dx; if(xx<0||xx>=bw) continue; s+=Bn[yy*bw+xx];k++;}}
     const v=2*s>k?0:255; d[o]=d[o+1]=d[o+2]=v;
   }
-  let ftext=null;
-  if(detector){ try{ const r=await detector.detect(img); const hit=r.find(x=>x.rawValue!==c.data); if(hit) ftext=hit.rawValue; }catch(e){} }
-  if(!ftext){ const f=jsQR(d,w,h,{inversionAttempts:'dontInvert'}); if(f&&f.data!==c.data) ftext=f.data; }
-  if(ftext){ handleText(ftext); nomaFineOk++; nomaFails=0; }
+  let ftext=null,fcorners=null,fn=null;
+  if(detector){ try{ const r=await detector.detect(img); const hit=r.find(x=>x.rawValue!==c.data);
+    if(hit){ ftext=hit.rawValue; if(hit.cornerPoints&&hit.cornerPoints.length===4) fcorners=cornersOf(hit.cornerPoints); } }catch(e){} }
+  if(!ftext){ const f=jsQR(d,w,h,{inversionAttempts:'dontInvert'});
+    if(f&&f.data!==c.data){ ftext=f.data; const FL=f.location; fcorners=cornersOf([FL.topLeftCorner,FL.topRightCorner,FL.bottomRightCorner,FL.bottomLeftCorner]); fn=17+4*f.version; } }
+  if(ftext){ onDecoded(ftext,fcorners,img,w,h,fn); nomaFineOk++; nomaFails=0; if(FRAME) FRAME.enh=1; }
   else if(++nomaFails>=2){ nomaFails=0; sicIdx=(sicIdx+1)%SIC_VARIANTS.length; }
 }
 
@@ -601,31 +648,38 @@ function slotLabel(tag){
 }
 function learn(tag){
   const keep=learned&&learned.mode===tag.m?learned:null;
-  const l={mode:tag.m,colors:+tag.c||(keep?keep.colors:1),tiles:+tag.t||(keep?keep.tiles:1),a:+tag.a||(keep?keep.a:0)};
-  if(learned&&learned.mode===l.mode&&learned.colors===l.colors&&learned.tiles===l.tiles&&learned.a===l.a) return;
+  const l={mode:tag.m,colors:+tag.c||(keep?keep.colors:1),tiles:+tag.t||(keep?keep.tiles:1),a:+tag.a||(keep?keep.a:0),
+           e:tag.e||(keep?keep.e:''),f:+tag.f||(keep?keep.f:0)};
+  if(learned&&['mode','colors','tiles','a','e','f'].every(k=>learned[k]===l[k])) return;
   learned=l;
   $('detected').innerHTML='Scheme: <b>'+(l.mode==='S'?`Same file to all · ${l.colors} color channel${l.colors>1?'s':''} × ${l.tiles} tile${l.tiles>1?'s':''}`
     : l.mode==='D'?(l.colors===3?'Different files · color division':`Different files · ${l.tiles} tiles`)
     : `Layered · base ${Math.round(l.a/2.55)} % power`)+'</b>';
 }
 
+/* parse one QR text, feed its file's decoder, and return what was read (for the experiment log) */
 function handleText(text){
-  const p=text.split('|'); if(p[0]!==PROTO||p.length<7) return;
-  const tag=parseTag(p[6]); if(!tag.m) return;
+  const p=text.split('|'); if(p[0]!==PROTO||p.length<7) return null;
+  const tag=parseTag(p[6]); if(!tag.m) return null;
   learn(tag);
-  const id=p[1];
+  const id=p[1], isInfo=p[2]==='M';
+  const slot=tag.s==='base'?'b':tag.s==='enh'?'e':(tag.s||'');      // one name per layer in the log
+  const info={id,slot,j:isInfo?-1:+p[2],k:tag.k?parseInt(tag.k,36):'',isInfo,isNew:false};
   let s=sessions.get(id);
-  if(!s){ s={id,label:slotLabel(tag),K:0,B:0,size:0,cdf:null,blocks:null,waiting:null,recovered:0,seen:new Set(),meta:null,reads:0,dups:0,t0:performance.now(),done:false,dirty:true,el:null};
+  if(!s){ s={id,label:slotLabel(tag),K:0,B:0,size:0,cdf:null,blocks:null,waiting:null,recovered:0,seen:new Set(),meta:null,reads:0,dups:0,
+             t0:performance.now(),tFirst:run?performance.now()-run.t0:0,done:false,dirty:true,el:null};
           sessions.set(id,s); }
-  if(s.done) return;
-  s.reads++; s.dirty=true;
-  if(p[2]==='M'){ if(!s.meta) s.meta={name:decodeURIComponent(p[3]),mime:p[4],hash:p[5]}; }
+  s.reads++;
+  if(s.done) return info;
+  s.dirty=true;
+  if(isInfo){ if(!s.meta) s.meta={name:decodeURIComponent(p[3]),mime:p[4],hash:p[5]}; }
   else if(p.length>=8){
     const j=+p[2];
     if(!s.blocks){ s.K=+p[3]; s.B=+p[4]; s.size=+p[5]; s.cdf=robustSolitonCdf(s.K); s.blocks=new Array(s.K).fill(null); s.waiting=Array.from({length:s.K},()=>[]); }
-    if(s.seen.has(j)) s.dups++; else { s.seen.add(j); addPacket(s,neighbours(j,s.K,s.cdf),b64dec(p[7])); }
+    if(s.seen.has(j)) s.dups++; else { s.seen.add(j); info.isNew=true; addPacket(s,neighbours(j,s.K,s.cdf),b64dec(p[7])); }
   }
   if(s.blocks&&s.recovered===s.K&&s.meta) finish(s);
+  return info;
 }
 
 /* ---------- peeling decoder (per session) ---------- */
@@ -653,7 +707,7 @@ function recover(s,b0,d0){
 }
 
 async function finish(s){
-  s.done=true; s.dirty=true; s.t1=performance.now();
+  s.done=true; s.dirty=true; s.t1=performance.now(); s.uniqueAtDone=s.seen.size; s.tDone=run?s.t1-run.t0:0;
   const buf=new Uint8Array(s.K*s.B); s.blocks.forEach((b,i)=>buf.set(b,i*s.B));
   const data=buf.slice(0,s.size); s.ok=(await sha256hex(data))===s.meta.hash;
   if(s.ok){ s.url=URL.createObjectURL(new Blob([data],{type:s.meta.mime})); navigator.vibrate?.(150); }
@@ -661,6 +715,7 @@ async function finish(s){
 }
 
 function renderSessions(){
+  updateRunStatus();
   const t=(performance.now()-rxT0)/1000;
   let extra='';
   if(learned&&learned.mode==='N') extra=stat('Base reads',nomaCoarseOk)+stat('Enhancement reads',nomaFineOk);
@@ -692,6 +747,261 @@ function renderSessions(){
     }
   }
 }
+
+/* =========================== EXPERIMENT LOG ===========================
+   A run = one labelled measurement. While a run is active the receiver logs
+     frames : one row per processed camera frame
+     qrs    : one row per QR code read (stream slot, file, packet j, sender frame k,
+              and, optionally, the raw module error count against a regenerated copy of that QR)
+   At the end of a run it summarises per stream slot and per file, and keeps the run on this phone. */
+const RUNS_KEY='qrlab-runs-v1';
+let run=null, runs=[], FRAME=null, clearArmed=0;
+try{ runs=JSON.parse(localStorage.getItem(RUNS_KEY)||'[]'); if(!Array.isArray(runs)) runs=[]; }catch(e){ runs=[]; }
+function saveRuns(){ try{ localStorage.setItem(RUNS_KEY,JSON.stringify(runs)); return true; }catch(e){ return false; } }
+
+async function processFrame(frame,w,h){
+  const t0=performance.now();
+  FRAME={qr:0,nw:0,dup:0,info:0,mer:0,base:0,enh:0};
+  try{
+    if(learned&&learned.mode==='N') await decodeLayered(frame,w,h);
+    else await decodeMultiplexed(frame,w,h);
+  }catch(e){}
+  procFrames++;
+  if(run){
+    let rec=0; for(const s of sessions.values()) rec+=s.recovered;
+    run.frames.push([run.frameIdx,Math.round(t0-run.t0),Math.round(performance.now()-t0),FRAME.qr,FRAME.nw,FRAME.dup,FRAME.info,rec,
+                     FRAME.base,FRAME.enh,(learned&&learned.mode==='N')?sicIdx:'']);
+    run.frameIdx++;
+    checkRunStop();
+  }
+  FRAME=null;
+}
+
+function onDecoded(text,corners,img,w,h,nDec){
+  const info=handleText(text);
+  if(!info||!run||!FRAME) return;
+  FRAME.qr++; if(info.isInfo) FRAME.info++; else if(info.isNew) FRAME.nw++; else FRAME.dup++;
+  let me=null;
+  // sample about 4 codes per frame, chosen at random so every stream gets measured equally often
+  const expect=learned?(learned.mode==='N'?2:learned.colors*learned.tiles):1;
+  if(corners&&run.mer&&learned&&learned.e&&FRAME.mer<6&&Math.random()<Math.min(1,4/expect)){ me=moduleErrors(text,corners,img,w,h,learned.e,nDec); FRAME.mer++; }
+  run.qrs.push([Math.round(performance.now()-run.t0),run.frameIdx,info.slot,info.id,info.j,info.k,me?me.n:'',me?me.err:'',info.isNew?1:0]);
+}
+
+/* Raw (pre-Reed-Solomon) module errors: regenerate the exact QR the sender drew from the decoded text
+   (same library, same error-correction level -> same version and mask), sample the binary image the
+   decoder used at every module centre, and count disagreements. Measured only on codes that were found. */
+function moduleErrors(text,c,img,w,h,ecc,nDec){
+  let q; try{ q=qrcode(0,ecc); q.addData(text); q.make(); }catch(e){ return null; }
+  const n=q.getModuleCount(); if(nDec&&nDec!==n) return null;
+  const d=img.data; let err=0;
+  for(let r=0;r<n;r++){ const v=(r+.5)/n;
+    for(let col=0;col<n;col++){ const u=(col+.5)/n;
+      const x=Math.round(c.tl.x*(1-u)*(1-v)+c.tr.x*u*(1-v)+c.bl.x*(1-u)*v+c.br.x*u*v);
+      const y=Math.round(c.tl.y*(1-u)*(1-v)+c.tr.y*u*(1-v)+c.bl.y*(1-u)*v+c.br.y*u*v);
+      const dark=(x>=0&&y>=0&&x<w&&y<h)?d[(y*w+x)*4]<128:false;
+      if(dark!==q.isDark(r,col)) err++; } }
+  return {n,err};
+}
+
+function schemeName(l){
+  if(!l) return '';
+  if(l.mode==='S') return `Same file ${l.colors}c×${l.tiles}t`;
+  if(l.mode==='D') return l.colors===3?'Per-user color':`Per-user ${l.tiles} tiles`;
+  return `Layered a=${l.a}`;
+}
+function slotName(slot){
+  if(slot==='b'||slot==='base') return 'Base layer';
+  if(slot==='e'||slot==='enh') return 'Enhancement layer';
+  const ch={R:'Red',G:'Green',B:'Blue',L:'B/W'}[slot[0]]; return ch?`${ch} · tile ${(+slot.slice(1))+1}`:slot;
+}
+function median(a){ if(!a.length) return ''; const b=[...a].sort((x,y)=>x-y), m=b.length>>1; return b.length%2?b[m]:(b[m-1]+b[m])/2; }
+const r4=x=>x===''||x==null||!isFinite(x)?'':+(+x).toFixed(4);
+
+async function startRun(){
+  resetDecoding();
+  const id=runs.reduce((m,r)=>Math.max(m,r.meta.run_id),0)+1;
+  run={t0:performance.now(),frameIdx:0,frames:[],qrs:[],mer:$('runMer').checked,stopMode:$('runStop').value,secs:Math.max(1,+$('runSecs').value||30),
+       meta:{run_id:id,label:$('runLabel').value.trim(),distance_m:$('runDist').value===''?'':+$('runDist').value,
+             notes:$('runNotes').value.trim(),start_iso:new Date().toISOString()}};
+  $('btnRun').textContent='Stop run'; $('btnRun').classList.remove('primary'); $('btnReset').disabled=true;
+  if(!scanning) await startCam();
+  if(run) run.t0=performance.now();          // time starts once the camera is running
+  updateRunStatus();
+}
+function checkRunStop(){
+  const el=(performance.now()-run.t0)/1000;
+  if(el>=run.secs&&run.stopMode!=='manual') return stopRun();
+  if(run.stopMode==='done'&&sessions.size){
+    const all=[...sessions.values()];
+    if(all.every(s=>s.done&&s.ok!==undefined)) stopRun();
+  }
+}
+function summarise(r){
+  const nF=r.frames.length, dur=r.meta.duration_s||0;
+  const by=new Map();
+  for(const [t,fi,slot,fid,j,k,n,err] of r.qrs){
+    let o=by.get(slot); if(!o){o={slot,files:new Set(),ks:new Set(),fis:new Set(),reads:0,mods:0,errs:0,mer:[]};by.set(slot,o);}
+    o.reads++; o.files.add(fid); if(k!=='') o.ks.add(k); o.fis.add(fi);
+    if(n!==''){ o.mods+=n*n; o.errs+=err; o.mer.push(err/(n*n)); }
+  }
+  const slots=[...by.values()].sort((a,b)=>a.slot<b.slot?-1:1).map(o=>{
+    let kmin=Infinity,kmax=-Infinity; for(const k of o.ks){ if(k<kmin)kmin=k; if(k>kmax)kmax=k; }
+    const span=o.ks.size?kmax-kmin+1:0;
+    return {slot:o.slot,stream:slotName(o.slot),file_ids:[...o.files].join(' '),qr_reads:o.reads,distinct_sender_frames:o.ks.size,
+            sender_frames_in_window:span,frame_loss:span?r4(1-o.ks.size/span):'',
+            success_per_processed_frame:nF?r4(o.fis.size/nF):'',
+            mer_codes_measured:o.mer.length,modules_measured:o.mods,module_errors:o.errs,
+            mer_pooled:o.mods?+(o.errs/o.mods).toExponential(4):'',mer_median:o.mer.length?+median(o.mer).toExponential(4):''};
+  });
+  const files=[...sessions.values()].map(s=>{
+    const comp=s.done?(s.tDone-s.tFirst)/1000:'';
+    return {file_id:s.id,stream:s.label,name:s.meta?s.meta.name:'',size_bytes:s.size||'',K:s.K||'',B:s.B||'',
+            t_first_s:r4(s.tFirst/1000),t_done_s:s.done?r4(s.tDone/1000):'',complete_s:s.done?r4(comp):'',
+            blocks_recovered:s.recovered,unique_packets:s.done?s.uniqueAtDone:s.seen.size,qr_reads:s.reads,duplicates:s.dups,
+            overhead:s.done&&s.K?r4(s.uniqueAtDone/s.K-1):'',goodput_Bps:s.done&&comp>0?+(s.size/comp).toFixed(1):'',
+            verified:s.done?(s.ok?1:0):''};
+  });
+  const procMs=r.frames.map(f=>f[2]);
+  const mods=slots.reduce((a,x)=>a+x.modules_measured,0), errs=slots.reduce((a,x)=>a+x.module_errors,0);
+  const losses=slots.filter(x=>x.frame_loss!=='').map(x=>x.frame_loss);
+  const done=files.filter(f=>f.complete_s!=='');
+  const summary={frames_processed:nF,proc_fps:dur?r4(nF/dur):'',mean_proc_ms:procMs.length?r4(procMs.reduce((a,b)=>a+b,0)/procMs.length):'',
+    qr_reads:r.qrs.length,slots_seen:slots.length,mean_frame_loss:losses.length?r4(losses.reduce((a,b)=>a+b,0)/losses.length):'',
+    mer_pooled:mods?+(errs/mods).toExponential(4):'',files_seen:files.length,files_done:done.length,
+    max_complete_s:done.length?Math.max(...done.map(f=>f.complete_s)):'',
+    total_goodput_Bps:done.length&&dur?+(done.reduce((a,f)=>a+f.size_bytes,0)/Math.max(...done.map(f=>f.complete_s))).toFixed(1):''};
+  return {slots,files,summary};
+}
+function stopRun(){
+  if(!run) return;
+  const r=run; run=null;
+  const vt=stream&&stream.getVideoTracks?stream.getVideoTracks()[0]:null, st=vt&&vt.getSettings?vt.getSettings():{};
+  Object.assign(r.meta,{duration_s:r4((performance.now()-r.t0)/1000),scheme:schemeName(learned),
+    mode:learned?learned.mode:'',colors:learned?learned.colors:'',tiles:learned?learned.tiles:'',base_amp:learned&&learned.mode==='N'?learned.a:'',
+    ecc:learned?learned.e:'',sender_fps:learned?learned.f:'',
+    device:(navigator.userAgent||'').slice(0,160),video_res:st.width?`${st.width}x${st.height}`:'',camera_fps:st.frameRate?r4(st.frameRate):'',
+    proc_res:+$('res').value,decoder:detector?'BarcodeDetector':'jsQR',mer_measured:r.mer?1:0});
+  const {slots,files,summary}=summarise(r);
+  runs.push({meta:r.meta,summary,slots,files,frames:r.frames,qrs:r.qrs});
+  const saved=saveRuns();
+  $('btnRun').textContent='Start run'; $('btnRun').classList.add('primary'); $('btnReset').disabled=false;
+  $('runStatus').innerHTML=`Run #${r.meta.run_id} saved: ${summary.frames_processed} frames, ${summary.qr_reads} QR reads, ${summary.files_done} of ${summary.files_seen} files received.`
+    +(saved?'':' <span class="bad">This phone\'s storage is full, so the run is kept only until you close the page. Download the dataset, then clear saved runs.</span>');
+  renderRuns();
+}
+$('btnRun').onclick=()=>run?stopRun():startRun();
+$('runStop').onchange=()=>{ $('runSecs').closest('label').querySelector('span').textContent=$('runStop').value==='done'?'Time limit (s)':'Duration (s)'; $('runSecs').disabled=$('runStop').value==='manual'; };
+
+function updateRunStatus(){
+  if(!run) return;
+  const el=((performance.now()-run.t0)/1000).toFixed(1), all=[...sessions.values()];
+  $('runStatus').innerHTML=`<b>Recording run #${run.meta.run_id}</b> · ${el} s · ${run.qrs.length} QR reads · ${all.filter(s=>s.done).length} of ${all.length} files received`;
+}
+
+function renderRuns(){
+  if(!runs.length){ $('runsWrap').hidden=true; $('btnExport').disabled=true; $('btnClearRuns').disabled=true; return; }
+  $('runsWrap').hidden=false; $('btnExport').disabled=false; $('btnClearRuns').disabled=false;
+  const pct=x=>x===''?'–':(100*x).toFixed(1)+' %';
+  $('runsBody').innerHTML=runs.slice().reverse().map(r=>{const m=r.meta,s=r.summary; return `<tr>
+    <td class="num">${m.run_id}</td><td>${esc(m.label||'–')}</td><td class="num">${m.distance_m===''?'–':m.distance_m}</td><td>${esc(m.scheme||'–')}</td>
+    <td class="num">${m.duration_s}</td><td class="num">${pct(s.mean_frame_loss)}</td><td class="num">${s.mer_pooled===''?'–':(+s.mer_pooled).toExponential(1)}</td>
+    <td class="num">${s.files_done}/${s.files_seen}</td><td class="num">${s.max_complete_s===''?'–':s.max_complete_s.toFixed(1)}</td>
+    <td><button class="del" data-run="${m.run_id}" aria-label="Delete run ${m.run_id}">Delete</button></td></tr>`;}).join('');
+  $('runsBody').querySelectorAll('button.del').forEach(b=>b.onclick=()=>{
+    if(b.dataset.armed){ runs=runs.filter(r=>r.meta.run_id!==+b.dataset.run); saveRuns(); renderRuns(); }
+    else { b.dataset.armed='1'; b.textContent='Tap to confirm'; setTimeout(()=>{ if(b.isConnected){ delete b.dataset.armed; b.textContent='Delete'; } },3000); }
+  });
+}
+$('btnClearRuns').onclick=()=>{
+  if(Date.now()-clearArmed<4000){ runs=[]; saveRuns(); renderRuns(); $('runStatus').textContent='All saved runs deleted.'; $('btnClearRuns').textContent='Clear saved runs'; clearArmed=0; }
+  else { clearArmed=Date.now(); $('btnClearRuns').textContent=`Tap again to delete ${runs.length} run${runs.length>1?'s':''}`;
+         setTimeout(()=>{ if(Date.now()-clearArmed>=4000) $('btnClearRuns').textContent='Clear saved runs'; },4100); }
+};
+
+/* ---------- dataset export: five CSV tables + README in one .zip ---------- */
+function csv(cols,rows){
+  const f=v=>{ if(v===undefined||v===null) return ''; const t=String(v); return /[",\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t; };
+  return cols.join(',')+'\n'+rows.map(r=>r.map(f).join(',')).join('\n')+'\n';
+}
+const RUN_COLS=['run_id','label','distance_m','notes','start_iso','duration_s','scheme','mode','colors','tiles','base_amp','ecc','sender_fps',
+  'device','video_res','camera_fps','proc_res','decoder','mer_measured'];
+const SUM_COLS=['frames_processed','proc_fps','mean_proc_ms','qr_reads','slots_seen','mean_frame_loss','mer_pooled','files_seen','files_done','max_complete_s','total_goodput_Bps'];
+const SLOT_COLS=['slot','stream','file_ids','qr_reads','distinct_sender_frames','sender_frames_in_window','frame_loss','success_per_processed_frame',
+  'mer_codes_measured','modules_measured','module_errors','mer_pooled','mer_median'];
+const FILE_COLS=['file_id','stream','name','size_bytes','K','B','t_first_s','t_done_s','complete_s','blocks_recovered','unique_packets','qr_reads','duplicates','overhead','goodput_Bps','verified'];
+const FRAME_COLS=['frame_idx','t_ms','proc_ms','qr_reads','new_packets','duplicate_packets','info_frames','blocks_recovered_total','base_ok','enh_ok','sic_variant'];
+const QR_COLS=['t_ms','frame_idx','slot','file_id','j','k','modules','module_errors','new_packet'];
+const README=`QR Multiplex Lab dataset
+Generated ${new Date().toISOString()} by https://amro2021.github.io/qr-transfer/multi/
+
+Tables (join on run_id)
+runs.csv    one row per run: label, distance, scheme and sender settings learned from the QR tags,
+            receiver device, plus summary metrics.
+slots.csv   one row per run and stream slot (R0 = red channel tile 1, L1 = black-and-white tile 2,
+            b / e = base / enhancement layer).
+files.csv   one row per run and transmitted file.
+frames.csv  one row per processed camera frame.
+qrs.csv     one row per QR code read.
+
+Definitions
+k                      sender frame counter carried in every QR code.
+frame_loss             1 - distinct k read in this slot / (k_max - k_min + 1). Losses include sender frames the
+                       camera never sampled, so compare proc_fps with sender_fps.
+success_per_processed_frame
+                       fraction of processed camera frames in which this slot was read at least once.
+module_errors          raw module (pre-Reed-Solomon) errors: the decoded text is re-encoded with the sender's
+                       library and error-correction level, and every module centre of the binary image the
+                       decoder used is compared with it. Measured only on codes that were located and decoded,
+                       so it is a conditional error rate; read it together with frame_loss.
+mer_pooled             module_errors / modules_measured.
+overhead               unique packets needed / K - 1 (LT fountain reception overhead).
+complete_s             time from the first QR of a file to its verified reconstruction.
+goodput_Bps            file size / complete_s.
+sic_variant            index of the successive-interference-cancellation variant in use (layered scheme).
+Times are in milliseconds (t_ms) or seconds (_s) from the start of the run.
+`;
+function buildDataset(){
+  const rows=(key,cols)=>runs.flatMap(r=>(r[key]||[]).map(x=>[r.meta.run_id,...cols.map(c=>x[c])]));
+  return [
+    {name:'runs.csv',text:csv([...RUN_COLS,...SUM_COLS],runs.map(r=>[...RUN_COLS.map(c=>r.meta[c]),...SUM_COLS.map(c=>r.summary[c])]))},
+    {name:'slots.csv',text:csv(['run_id',...SLOT_COLS],rows('slots',SLOT_COLS))},
+    {name:'files.csv',text:csv(['run_id',...FILE_COLS],rows('files',FILE_COLS))},
+    {name:'frames.csv',text:csv(['run_id',...FRAME_COLS],runs.flatMap(r=>r.frames.map(f=>[r.meta.run_id,...f])))},
+    {name:'qrs.csv',text:csv(['run_id',...QR_COLS],runs.flatMap(r=>r.qrs.map(q=>[r.meta.run_id,...q])))},
+    {name:'README.txt',text:README},
+  ];
+}
+const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
+function crc32(b){let c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=CRC_T[(c^b[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+function makeZip(list){        // uncompressed ("stored") zip
+  const te=new TextEncoder(), parts=[], cen=[], now=new Date();
+  const time=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1), date=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate();
+  let off=0;
+  for(const f of list){
+    const name=te.encode(f.name), data=te.encode(f.text), crc=crc32(data);
+    const lh=new DataView(new ArrayBuffer(30));
+    [[0,0x04034b50,4],[4,20,2],[6,0x0800,2],[8,0,2],[10,time,2],[12,date,2],[14,crc,4],[18,data.length,4],[22,data.length,4],[26,name.length,2],[28,0,2]]
+      .forEach(([o,v,n])=>n===4?lh.setUint32(o,v,true):lh.setUint16(o,v,true));
+    parts.push(new Uint8Array(lh.buffer),name,data);
+    const ch=new DataView(new ArrayBuffer(46));
+    [[0,0x02014b50,4],[4,20,2],[6,20,2],[8,0x0800,2],[10,0,2],[12,time,2],[14,date,2],[16,crc,4],[20,data.length,4],[24,data.length,4],[28,name.length,2],
+     [30,0,2],[32,0,2],[34,0,2],[36,0,2],[38,0,4],[42,off,4]].forEach(([o,v,n])=>n===4?ch.setUint32(o,v,true):ch.setUint16(o,v,true));
+    cen.push(new Uint8Array(ch.buffer),name);
+    off+=30+name.length+data.length;
+  }
+  const size=cen.reduce((a,b)=>a+b.length,0), end=new DataView(new ArrayBuffer(22));
+  [[0,0x06054b50,4],[4,0,2],[6,0,2],[8,list.length,2],[10,list.length,2],[12,size,4],[16,off,4],[20,0,2]].forEach(([o,v,n])=>n===4?end.setUint32(o,v,true):end.setUint16(o,v,true));
+  return new Blob([...parts,...cen,new Uint8Array(end.buffer)],{type:'application/zip'});
+}
+$('btnExport').onclick=()=>{
+  const url=URL.createObjectURL(makeZip(buildDataset())), a=document.createElement('a');
+  const st=new Date().toISOString().slice(0,16).replace(/[-:T]/g,'');
+  a.href=url; a.download=`qr-lab-dataset-${st}.zip`; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),10000);
+  $('runStatus').textContent=`Dataset with ${runs.length} run${runs.length>1?'s':''} downloaded.`;
+};
+renderRuns();
 </script>
 </body>
 </html>
