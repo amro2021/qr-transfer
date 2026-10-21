@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QR Multiplex Lab</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<style>
+:root{
+  --bg:#f3f5f7; --surface:#ffffff; --fg:#14181d; --muted:#5d6874; --line:#d9dee4;
+  --accent:#0a62b8; --accent-fg:#ffffff; --ok:#17803a; --bad:#b42318; --well:#eaeef2;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#0f1317; --surface:#171c22; --fg:#e6eaee; --muted:#95a0ab; --line:#2a323b;
+  --accent:#4f9cf0; --accent-fg:#0b1420; --ok:#4cc172; --bad:#ff7a6e; --well:#1e252d; color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans)}
+main{max-width:920px;margin:0 auto;padding:20px max(16px,env(safe-area-inset-right,0px)) 48px max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:14px}
+header h1{font-size:22px;margin:0;letter-spacing:-.01em}
+header p{margin:4px 0 0;color:var(--muted);font-size:14px;max-width:62ch}
+header a{color:var(--accent)}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--well);padding:4px;border-radius:12px}
+.tabs button{border:0;background:transparent;color:var(--muted);font-weight:600}
+.tabs button[aria-selected="true"]{background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+button{font:inherit;font-weight:500;padding:11px 16px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--fg);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+section{display:flex;flex-direction:column;gap:14px}
+section[hidden],.panel[hidden]{display:none}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.step{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.modes{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px}
+.mode{display:flex;flex-direction:column;gap:4px;padding:12px;border:1px solid var(--line);border-radius:10px;cursor:pointer;position:relative}
+.mode input{position:absolute;opacity:0}
+.mode b{font-size:15px}
+.mode span{font-size:13px;color:var(--muted)}
+.mode:has(input:checked){border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.mode:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.fields label,.filerow{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+input,select{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);min-width:0}
+input[type=file]{width:100%}
+.filelist{display:flex;flex-direction:column;gap:10px}
+.swatch{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.actions{display:flex;flex-wrap:wrap;gap:8px}
+.actions>*{flex:1 1 140px}
+.note{font-size:13px;color:var(--muted);margin:0}
+.note b{color:var(--fg)}
+.qrbox{background:#ffffff;border-radius:10px;width:100%;max-width:900px;margin:0 auto}
+#qr{display:block;width:100%;height:auto;aspect-ratio:1;image-rendering:pixelated}
+#qr:fullscreen{width:auto;height:auto;max-width:100vw;max-height:100vh;margin:auto;background:#ffffff}
+video{width:100%;max-height:45vh;border-radius:10px;background:#000;object-fit:cover;display:block}
+.readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px}
+.readout div{background:var(--well);border-radius:8px;padding:7px 9px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.readout b{display:block;font:600 16px/1.3 var(--mono);letter-spacing:0;text-transform:none;color:var(--fg);font-variant-numeric:tabular-nums}
+.map{width:100%;height:14px;border-radius:4px;background:var(--well);display:block}
+.chip{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--well);color:var(--fg);margin-right:8px}
+.filename{font-family:var(--mono);font-size:14px;word-break:break-all}
+.ok{color:var(--ok);font-weight:600}.bad{color:var(--bad)}
+a.dl{display:inline-block;padding:11px 16px;border-radius:10px;background:var(--ok);color:#fff;text-decoration:none;font-weight:600}
+.sessions{display:flex;flex-direction:column;gap:10px}
+.preview img{max-width:100%;border-radius:8px}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>QR Multiplex Lab</h1>
+  <p>Three ways to share one screen between receivers: spread one file over colors and tiles, give each user their own channel, or layer a coarse and a fine code for near and far users. <a href="../">Simple version</a></p>
+</header>
+
+<div class="tabs" role="tablist">
+  <button id="tabSend" role="tab" aria-selected="true">Send</button>
+  <button id="tabRecv" role="tab" aria-selected="false">Receive</button>
+</div>
+
+<!-- ======================= SEND ======================= -->
+<section id="send">
+  <div class="panel">
+    <span class="step">1 · Scheme</span>
+    <div class="modes" role="radiogroup" aria-label="Scheme">
+      <label class="mode"><input type="radio" name="mode" value="S" checked>
+        <b>Same file to all</b>
+        <span>Fountain packets spread over color channels and screen tiles at once. Every receiver gets the whole file, faster.</span></label>
+      <label class="mode"><input type="radio" name="mode" value="D">
+        <b>Different files per user</b>
+        <span>Each color channel or screen tile carries its own file. Receivers save the one meant for them.</span></label>
+      <label class="mode"><input type="radio" name="mode" value="N">
+        <b>Mixed distances (layered)</b>
+        <span>A coarse base code every phone can read, plus a fine code that near phones recover after cancelling the base (SIC).</span></label>
+    </div>
+  </div>
+
+  <div class="panel" id="cfgS">
+    <span class="step">2 · File and layout</span>
+    <label class="filerow">File for everyone<input type="file" id="fS"></label>
+    <div class="fields">
+      <label for="sColors">Color channels<select id="sColors"><option value="1">1 · black and white</option><option value="3" selected>3 · red, green, blue</option></select></label>
+      <label for="sTiles">Screen tiles<select id="sTiles"><option value="1">1</option><option value="2" selected>2 · side by side</option><option value="4">4 · 2 × 2</option></select></label>
+    </div>
+  </div>
+
+  <div class="panel" id="cfgD" hidden>
+    <span class="step">2 · Division and files</span>
+    <div class="fields">
+      <label for="dDiv">Divide by<select id="dDiv"><option value="color">Color · up to 3 users</option><option value="space2">Space · 2 tiles</option><option value="space4">Space · 4 tiles</option></select></label>
+    </div>
+    <div class="filelist" id="dFiles"></div>
+  </div>
+
+  <div class="panel" id="cfgN" hidden>
+    <span class="step">2 · Layers</span>
+    <p class="note">The base layer carries few bytes per frame, so keep its file small: under about 1 KB, such as a text message. The enhancement layer can be larger. Receivers need a sharp, close view to recover it.</p>
+    <label class="filerow">Base layer · read by every phone<input type="file" id="nBase"></label>
+    <label class="filerow">Enhancement layer · near phones only<input type="file" id="nEnh"></label>
+    <div class="fields">
+      <label for="nAc">Base layer power share<select id="nAc"><option value="150">59 %</option><option value="170" selected>67 %</option><option value="190">75 %</option></select></label>
+      <label for="nBc">Base block (bytes)<input type="number" id="nBc" value="20" min="10" max="600"></label>
+      <label for="nBf">Enhancement block (bytes)<input type="number" id="nBf" value="250" min="50" max="1500"></label>
+    </div>
+  </div>
+
+  <div class="panel">
+    <details>
+      <summary class="note" style="cursor:pointer">Transmission settings</summary>
+      <div class="fields" style="margin-top:10px">
+        <label for="blk">Block size (bytes)<input type="number" id="blk" value="300" min="50" max="1500"></label>
+        <label for="fps">Frames per second<input type="number" id="fps" value="5" min="1" max="20"></label>
+        <label for="ecc">QR error correction<select id="ecc"><option>L</option><option selected>M</option><option>Q</option><option>H</option></select></label>
+        <label for="every">File-info frame every<input type="number" id="every" value="10" min="2" max="100"></label>
+      </div>
+    </details>
+    <span class="step">3 · Broadcast</span>
+    <div class="actions">
+      <button class="primary" id="btnConvert" disabled>Convert to QR series</button>
+      <button id="btnPlay" disabled>Play</button>
+      <button id="btnFull" disabled>Fullscreen</button>
+    </div>
+    <p class="note" id="sendInfo">Choose the file or files for this scheme.</p>
+  </div>
+  <div class="qrbox"><canvas id="qr" width="720" height="720" aria-label="QR stream"></canvas></div>
+  <div class="readout" id="sendStats"></div>
+</section>
+
+<!-- ======================= RECEIVE ======================= -->
+<section id="recv" hidden>
+  <div class="panel">
+    <p class="note">Open the camera and point it at the sender's screen. The page works out which scheme is being sent. For the layered scheme, stand far away to get only the base file, or close to get both.</p>
+    <div class="actions">
+      <button class="primary" id="btnCam">Open camera</button>
+      <button id="btnCamStop" disabled>Stop camera</button>
+      <button id="btnReset">Start over</button>
+    </div>
+    <div class="fields">
+      <label for="res">Processing resolution<select id="res"><option value="720">720 px · faster</option><option value="960" selected>960 px</option><option value="1280">1280 px · sharper</option></select></label>
+    </div>
+    <p class="note" id="detected">Scheme: not detected yet.</p>
+  </div>
+  <video id="video" playsinline muted></video>
+  <div class="readout" id="rxStats"></div>
+  <div class="sessions" id="sessions"></div>
+</section>
+</main>
+
+<script>
+/* =====================================================================
+   PROTOCOL F3
+   Data : F3|<id>|<j>|<K>|<B>|<size>|<tag>|<base64 payload>
+   Info : F3|<id>|M|<uri name>|<mime>|<sha256>|<tag>
+   tag  : m=<S|D|N>,c=<colors>,t=<tiles>,s=<slot>[,a=<base amplitude>]
+          slot = R0,G1,L2 … (channel + tile index) or base / enh
+   Each file is its own LT fountain stream (systematic first K packets,
+   then Robust-Soliton LT packets seeded by j).
+   ===================================================================== */
+const $=id=>document.getElementById(id);
+const PROTO='F3', TILE=720, MARGIN=Math.round(TILE*0.09);
+
+/* ---------- helpers ---------- */
+function b64enc(u8){let s='';for(let i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);return btoa(s);}
+function b64dec(str){const s=atob(str),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
+async function sha256hex(buf){const h=await crypto.subtle.digest('SHA-256',buf);return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('');}
+function fmtBytes(n){return n<1024?n.toFixed(0)+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(2)+' MB';}
+function stat(l,v){return `<div>${l}<b>${v}</b></div>`;}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function xorInto(a,b){for(let i=0;i<a.length;i++)a[i]^=b[i];}
+
+/* ---------- LT fountain code ---------- */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function robustSolitonCdf(K){
+  if(K===1) return new Float64Array([1]);
+  const c=0.1,delta=0.5,R=c*Math.log(K/delta)*Math.sqrt(K);
+  const mu=new Float64Array(K+1);
+  mu[1]=1/K; for(let d=2;d<=K;d++) mu[d]=1/(d*(d-1));
+  let s=Math.floor(K/R); if(s<1)s=1; if(s>K)s=K;
+  for(let d=1;d<s;d++) mu[d]+=R/(d*K);
+  const spike=R*Math.log(R/delta)/K; if(spike>0) mu[s]+=spike;
+  let Z=0; for(let d=1;d<=K;d++) Z+=mu[d];
+  const cdf=new Float64Array(K); let acc=0;
+  for(let d=1;d<=K;d++){acc+=mu[d]/Z; cdf[d-1]=acc;}
+  cdf[K-1]=1; return cdf;
+}
+function sampleDegree(cdf,u){let lo=0,hi=cdf.length-1;while(lo<hi){const m=(lo+hi)>>1;if(cdf[m]<u)lo=m+1;else hi=m;}return lo+1;}
+function neighbours(j,K,cdf){
+  if(j<K) return [j];
+  const rng=mulberry32((Math.imul(j,0x9E3779B1)^0x85EBCA6B)>>>0);
+  const d=sampleDegree(cdf,rng());
+  const set=new Set(); while(set.size<d) set.add(Math.floor(rng()*K));
+  return [...set];
+}
+
+/* ---------- tabs ---------- */
+function showTab(send){
+  $('tabSend').setAttribute('aria-selected',send);$('tabRecv').setAttribute('aria-selected',!send);
+  $('send').hidden=!send;$('recv').hidden=send;
+  if(send) stopCam(); else pause();
+}
+$('tabSend').onclick=()=>showTab(true);
+$('tabRecv').onclick=()=>showTab(false);
+
+/* =========================== SENDER =========================== */
+const files={S:null,D:[],N:{base:null,enh:null}};
+let plan=null,timer=null,frameNo=0,wakeLock=null;
+
+async function readFile(f){
+  const bytes=new Uint8Array(await f.arrayBuffer());
+  return {name:f.name,size:f.size,mime:f.type||'application/octet-stream',bytes,hash:await sha256hex(bytes)};
+}
+function mode(){return document.querySelector('input[name=mode]:checked').value;}
+function invalidate(){pause();plan=null;$('btnPlay').disabled=true;$('btnFull').disabled=true;checkReady();}
+
+document.querySelectorAll('input[name=mode]').forEach(r=>r.onchange=()=>{
+  const m=mode(); $('cfgS').hidden=m!=='S'; $('cfgD').hidden=m!=='D'; $('cfgN').hidden=m!=='N'; invalidate();
+});
+['sColors','sTiles','nAc','nBc','nBf','blk','ecc'].forEach(id=>$(id).onchange=invalidate);
+
+$('fS').onchange=async e=>{files.S=e.target.files[0]?await readFile(e.target.files[0]):null;invalidate();};
+$('nBase').onchange=async e=>{files.N.base=e.target.files[0]?await readFile(e.target.files[0]):null;invalidate();};
+$('nEnh').onchange=async e=>{files.N.enh=e.target.files[0]?await readFile(e.target.files[0]):null;invalidate();};
+
+const COLOR_SW={R:'#e0312b',G:'#21a336',B:'#2a5fe0'};
+function renderDFiles(){
+  const div=$('dDiv').value; files.D=[];
+  const rows = div==='color'
+    ? [['Red channel · user 1','R'],['Green channel · user 2','G'],['Blue channel · user 3','B']]
+    : div==='space2' ? [['Left tile · user 1'],['Right tile · user 2']]
+    : [['Top-left tile · user 1'],['Top-right tile · user 2'],['Bottom-left tile · user 3'],['Bottom-right tile · user 4']];
+  $('dFiles').innerHTML=rows.map((r,i)=>`<label class="filerow" for="dFile${i}">${r[1]?`<span><i class="swatch" style="background:${COLOR_SW[r[1]]}"></i>${r[0]}</span>`:r[0]}<input type="file" id="dFile${i}"></label>`).join('');
+  rows.forEach((r,i)=>$('dFile'+i).onchange=async e=>{files.D[i]=e.target.files[0]?await readFile(e.target.files[0]):null;invalidate();});
+  invalidate();
+}
+$('dDiv').onchange=renderDFiles; renderDFiles();
+
+function checkReady(){
+  const m=mode();
+  const ok = m==='S' ? !!files.S : m==='D' ? files.D.some(Boolean) : !!(files.N.base&&files.N.enh);
+  $('btnConvert').disabled=!ok;
+  if(!ok) $('sendInfo').textContent = m==='N' ? 'Choose a base file and an enhancement file.' : m==='D' ? 'Choose at least one file.' : 'Choose a file.';
+  else if(!plan) $('sendInfo').textContent='Ready to convert.';
+}
+
+const usedIds=new Set();
+function makeEnc(file,B){
+  B=Math.max(20,B|0);
+  const K=Math.max(1,Math.ceil(file.size/B)), padded=new Uint8Array(K*B); padded.set(file.bytes);
+  const blocks=[]; for(let i=0;i<K;i++) blocks.push(padded.subarray(i*B,(i+1)*B));
+  let id; do{id=Math.random().toString(16).slice(2,6);}while(usedIds.has(id)); usedIds.add(id);
+  return {id,K,B,blocks,cdf:robustSolitonCdf(K),j:0,count:0,file};
+}
+function encText(enc,tag,allowInfo,shortTag){
+  const every=Math.max(2,+$('every').value|0);
+  if(allowInfo && (enc.count++%every===0))
+    return [PROTO,enc.id,'M',encodeURIComponent(enc.file.name),enc.file.mime,enc.file.hash,tag].join('|');
+  const j=enc.j++, out=new Uint8Array(enc.B);
+  for(const i of neighbours(j,enc.K,enc.cdf)) xorInto(out,enc.blocks[i]);
+  return [PROTO,enc.id,j,enc.K,enc.B,enc.file.size,shortTag||tag,b64enc(out)].join('|');
+}
+
+function buildPlan(){
+  const m=mode(), B=+$('blk').value;
+  const p={mode:m,colors:1,tiles:1,ac:0,streams:[]};
+  const tagOf=(slot)=>`m=${p.mode},c=${p.colors},t=${p.tiles},s=${slot}`+(p.mode==='N'?`,a=${p.ac}`:'');
+  if(m==='S'){
+    p.colors=+$('sColors').value; p.tiles=+$('sTiles').value;
+    const enc=makeEnc(files.S,B), chans=p.colors===3?['R','G','B']:['L'], slots=[];
+    for(let t=0;t<p.tiles;t++) for(const ch of chans) slots.push({tile:t,ch,info:true});   // info frames rotate over all slots
+    slots.forEach(s=>s.tag=tagOf(s.ch+s.tile));
+    p.streams.push({enc,slots});
+  }else if(m==='D'){
+    const div=$('dDiv').value;
+    if(div==='color'){
+      p.colors=3; p.tiles=1;
+      ['R','G','B'].forEach((ch,i)=>{ if(files.D[i]) p.streams.push({enc:makeEnc(files.D[i],B),slots:[{tile:0,ch,info:true,tag:tagOf(ch+'0')}]}); });
+    }else{
+      p.colors=1; p.tiles=div==='space2'?2:4;
+      for(let i=0;i<p.tiles;i++) if(files.D[i]) p.streams.push({enc:makeEnc(files.D[i],B),slots:[{tile:i,ch:'L',info:true,tag:tagOf('L'+i)}]});
+    }
+  }else{
+    p.ac=+$('nAc').value;
+    p.streams.push({enc:makeEnc(files.N.base,+$('nBc').value),slots:[{layer:'c',info:true,tag:tagOf('base'),short:'m=N,s=b'}]});
+    p.streams.push({enc:makeEnc(files.N.enh,+$('nBf').value),slots:[{layer:'f',info:true,tag:tagOf('enh'),short:'m=N,s=e'}]});
+  }
+  return p;
+}
+
+function matrix(text){
+  const q=qrcode(0,$('ecc').value); q.addData(text); q.make();
+  const n=q.getModuleCount(), d=new Uint8Array(n*n);
+  for(let r=0;r<n;r++) for(let c=0;c<n;c++) d[r*n+c]=q.isDark(r,c)?1:0;
+  return {n,d};
+}
+function idxMap(n,s){const a=new Uint16Array(s);for(let i=0;i<s;i++)a[i]=Math.floor(i*n/s);return a;}
+
+function compose(items,p){
+  const cols=p.tiles===1?1:2, rows=p.tiles===4?2:1, W=cols*TILE, H=rows*TILE, c=$('qr');
+  if(c.width!==W||c.height!==H){c.width=W;c.height=H;c.style.aspectRatio=W+' / '+H;}
+  const ctx=c.getContext('2d'), img=ctx.createImageData(W,H), px=img.data; px.fill(255);
+  const s=TILE-2*MARGIN;
+  if(p.mode==='N'){
+    const co=items.find(i=>i.layer==='c').mat, fi=items.find(i=>i.layer==='f').mat;
+    const ac=p.ac, af=255-ac, cm=idxMap(co.n,s), fm=idxMap(fi.n,s);
+    for(let y=0;y<s;y++){
+      const cr=cm[y]*co.n, fr=fm[y]*fi.n; let o=((MARGIN+y)*W+MARGIN)*4;
+      for(let x=0;x<s;x++,o+=4){
+        const L=255-(co.d[cr+cm[x]]?ac:0)-(fi.d[fr+fm[x]]?af:0);
+        px[o]=px[o+1]=px[o+2]=L;
+      }
+    }
+  }else{
+    for(const it of items){
+      const tx=(it.tile%cols)*TILE+MARGIN, ty=Math.floor(it.tile/cols)*TILE+MARGIN, m=it.mat, map=idxMap(m.n,s);
+      const k=it.ch==='L'?-1:{R:0,G:1,B:2}[it.ch];
+      for(let y=0;y<s;y++){
+        const row=map[y]*m.n; let o=((ty+y)*W+tx)*4;
+        for(let x=0;x<s;x++,o+=4) if(m.d[row+map[x]]){ if(k<0){px[o]=px[o+1]=px[o+2]=0;} else px[o+k]=0; }
+      }
+    }
+  }
+  ctx.putImageData(img,0,0);
+}
+function frameItems(p){
+  const items=[];
+  for(const st of p.streams) for(const sl of st.slots) items.push({...sl,mat:matrix(encText(st.enc,sl.tag,sl.info,sl.short))});
+  return items;
+}
+
+$('btnConvert').onclick=()=>{
+  pause();
+  try{ plan=buildPlan(); compose(frameItems(plan),plan); }
+  catch(e){ plan=null; $('sendInfo').innerHTML='<span class="bad">A block is too big for one QR code at this error-correction level. Lower the block size.</span>'; return; }
+  frameNo=0; $('btnPlay').disabled=false; $('btnFull').disabled=false;
+  const qrs=plan.streams.reduce((a,s)=>a+s.slots.length,0)+(plan.mode==='N'?0:0);
+  const desc = plan.mode==='S' ? `1 file over ${plan.colors} color channel${plan.colors>1?'s':''} × ${plan.tiles} tile${plan.tiles>1?'s':''} = <b>${qrs} QR codes per frame</b>`
+    : plan.mode==='D' ? `<b>${plan.streams.length} files</b>, one per ${plan.colors===3?'color channel':'tile'}`
+    : `Base layer ${Math.round(plan.ac/2.55)} % power, enhancement layer ${100-Math.round(plan.ac/2.55)} %`;
+  $('sendInfo').innerHTML=desc+'. Press Play and keep it running.';
+  updateSendStats();
+};
+function tick(){ try{compose(frameItems(plan),plan);}catch(e){} frameNo++; updateSendStats(); }
+async function play(){
+  if(!plan) return;
+  timer=setInterval(tick,1000/Math.min(20,Math.max(1,+$('fps').value)));
+  $('btnPlay').textContent='Pause';
+  try{wakeLock=await navigator.wakeLock?.request('screen');}catch(e){}
+}
+function pause(){if(timer){clearInterval(timer);timer=null;}$('btnPlay').textContent='Play';try{wakeLock?.release();}catch(e){}wakeLock=null;}
+$('btnPlay').onclick=()=>timer?pause():play();
+$('btnFull').onclick=()=>{try{const r=$('qr').requestFullscreen?.();r&&r.catch(()=>{});}catch(e){}};
+
+function updateSendStats(){
+  if(!plan) return;
+  const fps=+$('fps').value, every=+$('every').value;
+  let rate=0,qrs=0; for(const st of plan.streams){ qrs+=st.slots.length; rate+=st.enc.B*st.slots.length*fps*(st.slots.some(s=>s.info)?(1-1/(every*st.slots.length)):1); }
+  $('sendStats').innerHTML=stat('QR per frame',qrs)+stat('Files',plan.streams.length)
+    +stat('Blocks K',plan.streams.map(s=>s.enc.K).join(' / '))+stat('Raw data rate',fmtBytes(rate)+'/s')+stat('Frames sent',frameNo);
+}
+
+/* =========================== RECEIVER =========================== */
+let stream=null,scanning=false,detector=null,learned=null,sessions=new Map(),procFrames=0,rxT0=0;
+let nomaFails=0,nomaFineOk=0,nomaCoarseOk=0;
+const work=document.createElement('canvas'), wctx=work.getContext('2d',{willReadFrequently:true});
+const bufs=[];
+
+async function startCam(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});
+  }catch(e){$('detected').innerHTML='<span class="bad">The camera could not start: '+esc(e.message)+'.</span> Allow camera access for this site and try again.';return;}
+  const v=$('video'); v.srcObject=stream; await v.play();
+  detector=null;
+  if('BarcodeDetector' in window){try{const f=await BarcodeDetector.getSupportedFormats();if(f.includes('qr_code'))detector=new BarcodeDetector({formats:['qr_code']});}catch(e){}}
+  scanning=true; rxT0=performance.now(); procFrames=0;
+  $('btnCam').disabled=true; $('btnCamStop').disabled=false;
+  requestAnimationFrame(scanLoop);
+}
+function stopCam(){scanning=false;stream?.getTracks().forEach(t=>t.stop());stream=null;$('btnCam').disabled=false;$('btnCamStop').disabled=true;}
+$('btnCam').onclick=startCam; $('btnCamStop').onclick=stopCam;
+$('btnReset').onclick=()=>{sessions.clear();learned=null;$('sessions').innerHTML='';$('rxStats').innerHTML='';$('detected').textContent='Scheme: not detected yet.';sicIdx=nomaFails=nomaFineOk=nomaCoarseOk=0;};
+
+function getBuf(i,w,h){ if(!bufs[i]||bufs[i].width!==w||bufs[i].height!==h) bufs[i]=new ImageData(w,h); return bufs[i]; }
+
+/* percentile-midpoint threshold of one channel (0,1,2 or 'L'), optionally inside a box */
+function channelValues(src,w,h,ch){
+  const n=w*h, out=new Uint8Array(n);
+  if(ch==='L'){ for(let i=0,o=0;i<n;i++,o+=4) out[i]=(77*src[o]+150*src[o+1]+29*src[o+2])>>8; }
+  else { for(let i=0,o=ch;i<n;i++,o+=4) out[i]=src[o]; }
+  return out;
+}
+function percentiles(vals,w,box){
+  const hist=new Uint32Array(256); let cnt=0;
+  if(box){ for(let y=box.y0;y<box.y1;y+=2) for(let x=box.x0;x<box.x1;x+=2){hist[vals[y*w+x]]++;cnt++;} }
+  else { for(let i=0;i<vals.length;i+=3){hist[vals[i]]++;cnt++;} }
+  let lo=0,hi=255,acc=0; const a=cnt*0.02,b=cnt*0.98;
+  for(let v=0;v<256;v++){acc+=hist[v]; if(acc>=a){lo=v;break;}}
+  acc=0; for(let v=0;v<256;v++){acc+=hist[v]; if(acc>=b){hi=v;break;}}
+  if(hi-lo<16){hi=Math.min(255,lo+16);}
+  return {lo,hi};
+}
+function binarize(vals,w,h,thr,img){
+  const d=img.data, n=w*h;
+  for(let i=0,o=0;i<n;i++,o+=4){const v=vals[i]<thr?0:255; d[o]=d[o+1]=d[o+2]=v; d[o+3]=255;}
+  return img;
+}
+function whiteout(img,w,h,b){
+  const d=img.data;
+  for(let y=Math.max(0,b.y0);y<Math.min(h,b.y1);y++) for(let x=Math.max(0,b.x0),o=(y*w+x)*4;x<Math.min(w,b.x1);x++,o+=4){d[o]=d[o+1]=d[o+2]=255;}
+}
+function boxFromCorners(pts,w,h,pad){
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for(const p of pts){x0=Math.min(x0,p.x);y0=Math.min(y0,p.y);x1=Math.max(x1,p.x);y1=Math.max(y1,p.y);}
+  const px=(x1-x0)*pad, py=(y1-y0)*pad;
+  return {x0:Math.max(0,Math.floor(x0-px)),y0:Math.max(0,Math.floor(y0-py)),x1:Math.min(w,Math.ceil(x1+px)),y1:Math.min(h,Math.ceil(y1+py))};
+}
+/* decode up to `max` QR codes from a binary image; returns [{text,box}] */
+async function decodeAll(img,w,h,max){
+  if(detector){
+    try{
+      const r=await detector.detect(img);
+      return r.slice(0,max).map(x=>({text:x.rawValue,box:boxFromCorners(x.cornerPoints&&x.cornerPoints.length?x.cornerPoints:[{x:x.boundingBox.x,y:x.boundingBox.y},{x:x.boundingBox.x+x.boundingBox.width,y:x.boundingBox.y+x.boundingBox.height}],w,h,0.02)}));
+    }catch(e){}
+  }
+  const out=[];
+  for(let k=0;k<max;k++){
+    const c=jsQR(img.data,w,h,{inversionAttempts:'dontInvert'}); if(!c) break;
+    const L=c.location, box=boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0.02);
+    out.push({text:c.data,box});
+    if(k<max-1) whiteout(img,w,h,boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0.12));
+  }
+  return out;
+}
+
+async function scanLoop(){
+  if(!scanning) return;
+  const v=$('video');
+  if(v.readyState>=2&&v.videoWidth){
+    const maxSide=(learned&&learned.mode==='N')?Math.max(1280,+$('res').value):+$('res').value, sc=Math.min(1,maxSide/Math.max(v.videoWidth,v.videoHeight));
+    const w=Math.round(v.videoWidth*sc), h=Math.round(v.videoHeight*sc);
+    if(work.width!==w||work.height!==h){work.width=w;work.height=h;}
+    wctx.drawImage(v,0,0,w,h);
+    const frame=wctx.getImageData(0,0,w,h);
+    try{
+      if(learned&&learned.mode==='N') await decodeLayered(frame,w,h);
+      else await decodeMultiplexed(frame,w,h);
+    }catch(e){}
+    procFrames++;
+    renderSessions();
+  }
+  requestAnimationFrame(scanLoop);
+}
+
+/* copy a rectangle of a binary image into its own ImageData */
+function crop(img,w,x0,y0,x1,y1){
+  const cw=x1-x0, ch=y1-y0, out=new ImageData(cw,ch), s=img.data, d=out.data;
+  for(let y=0;y<ch;y++) d.set(s.subarray(((y0+y)*w+x0)*4,((y0+y)*w+x1)*4),y*cw*4);
+  return out;
+}
+/* screen regions to search: whole frame, plus halves / quadrants when tiles are used
+   (several QR codes side by side confuse a single-code locator, so each tile gets its own crop) */
+function regions(w,h,tiles){
+  const ov=0.02, R=[];
+  if(tiles>=2){ const hw=Math.round(w/2), o=Math.round(w*ov);
+    if(tiles===2){ R.push([0,0,hw+o,h],[hw-o,0,w,h]); }
+    else { const hh=Math.round(h/2), oy=Math.round(h*ov); R.push([0,0,hw+o,hh+oy],[hw-o,0,w,hh+oy],[0,hh-oy,hw+o,h],[hw-o,hh-oy,w,h]); } }
+  return R;
+}
+async function decodeMultiplexed(frame,w,h){
+  const chans=!learned?[0,1,2]:(learned.colors===3?[0,1,2]:['L']);
+  const tiles=learned?learned.tiles:1;
+  for(let i=0;i<chans.length;i++){
+    const vals=channelValues(frame.data,w,h,chans[i]), {lo,hi}=percentiles(vals,w);
+    const img=binarize(vals,w,h,(lo+hi)/2,getBuf(i,w,h));
+    let found=0;
+    if(detector||tiles===1){
+      const res=await decodeAll(img,w,h,detector?8:1); found=res.length;
+      for(const r of res) handleText(r.text);
+    }
+    if(!detector&&(tiles>1||(!learned&&!found))){
+      for(const [x0,y0,x1,y1] of regions(w,h,learned?tiles:4)){
+        const res=await decodeAll(crop(img,w,x0,y0,x1,y1),x1-x0,y1-y0,1);
+        for(const r of res) handleText(r.text);
+      }
+    }
+    if(learned&&learned.mode==='N') return;          // switched scheme mid-frame
+  }
+}
+
+/* Layered (NOMA-style) decoding with successive interference cancellation (SIC):
+   1. threshold luminance at the midpoint: the strong base layer dominates -> decode base with jsQR,
+      which also gives its corner positions and version (module count n)
+   2. read every base module at its centre (away from edges) -> clean base bits
+   3. rebuild the base layer as an image on the same grid, blur it to match the camera,
+      subtract its contribution (add back ac where the base is dark) -> residual = enhancement layer
+   4. threshold the residual adaptively and decode the enhancement QR */
+/* receiver tries cancellation variants and locks onto the one that works for this camera:
+   pixel = per-pixel re-estimate of the base bit (exact when the image is sharp)
+   model = base rebuilt from its decoded modules and blurred by r px (handles camera blur) */
+const SIC_VARIANTS=[{m:'pixel',off:0},{m:'model',r:1},{m:'pixel',off:-10},{m:'model',r:2},{m:'pixel',off:10},{m:'model',r:0},{m:'model',r:3}];
+let sicIdx=0;
+/* Otsu threshold: robust to the few outlier pixels that cancellation errors leave behind */
+function otsu(vals){
+  const hist=new Float64Array(256); for(let i=0;i<vals.length;i++) hist[vals[i]]++;
+  let total=vals.length,sum=0; for(let v=0;v<256;v++) sum+=v*hist[v];
+  let wB=0,sumB=0,best=0,thr=128;
+  for(let t=0;t<256;t++){ wB+=hist[t]; if(!wB) continue; const wF=total-wB; if(!wF) break;
+    sumB+=t*hist[t]; const mB=sumB/wB, mF=(sum-sumB)/wF, between=wB*wF*(mB-mF)*(mB-mF);
+    if(between>best){best=between;thr=t+0.5;} }
+  return thr;
+}
+function boxBlur(src,bw,bh,r){
+  if(r<=0) return src;
+  const tmp=new Float32Array(bw*bh), out=new Float32Array(bw*bh);
+  for(let y=0;y<bh;y++){ let s=0,n=0; const row=y*bw;
+    for(let x=-r;x<bw;x++){ if(x+r<bw){s+=src[row+x+r];n++;} if(x-r-1>=0){s-=src[row+x-r-1];n--;} if(x>=0) tmp[row+x]=s/n; } }
+  for(let x=0;x<bw;x++){ let s=0,n=0;
+    for(let y=-r;y<bh;y++){ if(y+r<bh){s+=tmp[(y+r)*bw+x];n++;} if(y-r-1>=0){s-=tmp[(y-r-1)*bw+x];n--;} if(y>=0) out[y*bw+x]=s/n; } }
+  return out;
+}
+async function decodeLayered(frame,w,h){
+  const Y=channelValues(frame.data,w,h,'L'), g=percentiles(Y,w);
+  const coarseImg=binarize(Y,w,h,(g.lo+g.hi)/2,getBuf(0,w,h));
+  const c=jsQR(coarseImg.data,w,h,{inversionAttempts:'dontInvert'});
+  if(!c) return;
+  handleText(c.data); nomaCoarseOk++;
+  const L=c.location, n=17+4*c.version;
+  const box=boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0.04);
+  const {lo,hi}=percentiles(Y,w,boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0)), span=Math.max(16,hi-lo);
+  const ac=learned.a||170, af=255-ac, tc=255-(ac+af)/2;
+  // bilinear map from module space (u,v in 0..1) to image
+  const P=(u,v)=>({x:L.topLeftCorner.x*(1-u)*(1-v)+L.topRightCorner.x*u*(1-v)+L.bottomLeftCorner.x*(1-u)*v+L.bottomRightCorner.x*u*v,
+                   y:L.topLeftCorner.y*(1-u)*(1-v)+L.topRightCorner.y*u*(1-v)+L.bottomLeftCorner.y*(1-u)*v+L.bottomRightCorner.y*u*v});
+  const norm=i=>(Y[i]-lo)*255/span;
+  // 2. base bits sampled at module centres
+  const bits=new Uint8Array(n*n);
+  for(let r=0;r<n;r++) for(let q=0;q<n;q++){
+    const p=P((q+.5)/n,(r+.5)/n), x=Math.round(p.x), y=Math.round(p.y);
+    let s=0,k=0; for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){const xx=x+dx,yy=y+dy; if(xx>=0&&yy>=0&&xx<w&&yy<h){s+=norm(yy*w+xx);k++;}}
+    bits[r*n+q]=(s/k)<tc?1:0;
+  }
+  // 3. render base layer on the image grid (inverse of the affine part of the mapping)
+  const bw=box.x1-box.x0, bh=box.y1-box.y0, C=new Float32Array(bw*bh);
+  const ux=L.topRightCorner.x-L.topLeftCorner.x, uy=L.topRightCorner.y-L.topLeftCorner.y,
+        vx=L.bottomLeftCorner.x-L.topLeftCorner.x, vy=L.bottomLeftCorner.y-L.topLeftCorner.y, det=ux*vy-uy*vx;
+  for(let y=0;y<bh;y++) for(let x=0;x<bw;x++){
+    const dx=box.x0+x+.5-L.topLeftCorner.x, dy=box.y0+y+.5-L.topLeftCorner.y;
+    const u=(dx*vy-dy*vx)/det, v=(ux*dy-uy*dx)/det;
+    if(u>=0&&u<1&&v>=0&&v<1) C[y*bw+x]=bits[Math.floor(v*n)*n+Math.floor(u*n)];
+  }
+  const V=SIC_VARIANTS[sicIdx], R=new Uint8Array(bw*bh);
+  if(V.m==='model'){
+    const Cb=boxBlur(C,bw,bh,V.r);
+    for(let y=0;y<bh;y++) for(let x=0;x<bw;x++){ const i=y*bw+x; R[i]=Math.max(0,Math.min(255,norm((box.y0+y)*w+box.x0+x)+ac*Cb[i])); }
+  }else{
+    for(let y=0;y<bh;y++) for(let x=0;x<bw;x++){ const nv=norm((box.y0+y)*w+box.x0+x); R[y*bw+x]=Math.max(0,Math.min(255,nv<tc?nv+ac:nv)); }
+  }
+  // 4. adaptive threshold of the residual and decode
+  const tf=otsu(R)+(V.off||0);
+  const img=getBuf(1,w,h), d=img.data; d.fill(255);
+  // threshold, then a 3×3 majority filter removes the thin slivers left along base-module edges
+  const Bn=new Uint8Array(bw*bh); for(let i=0;i<bw*bh;i++) Bn[i]=R[i]<tf?1:0;
+  for(let y=0;y<bh;y++) for(let x=0,o=((box.y0+y)*w+box.x0)*4;x<bw;x++,o+=4){
+    let s=0,k=0; for(let dy=-1;dy<=1;dy++){const yy=y+dy; if(yy<0||yy>=bh) continue; for(let dx=-1;dx<=1;dx++){const xx=x+dx; if(xx<0||xx>=bw) continue; s+=Bn[yy*bw+xx];k++;}}
+    const v=2*s>k?0:255; d[o]=d[o+1]=d[o+2]=v;
+  }
+  let ftext=null;
+  if(detector){ try{ const r=await detector.detect(img); const hit=r.find(x=>x.rawValue!==c.data); if(hit) ftext=hit.rawValue; }catch(e){} }
+  if(!ftext){ const f=jsQR(d,w,h,{inversionAttempts:'dontInvert'}); if(f&&f.data!==c.data) ftext=f.data; }
+  if(ftext){ handleText(ftext); nomaFineOk++; nomaFails=0; }
+  else if(++nomaFails>=2){ nomaFails=0; sicIdx=(sicIdx+1)%SIC_VARIANTS.length; }
+}
+
+function parseTag(t){const o={};for(const kv of (t||'').split(',')){const [k,v]=kv.split('=');if(k)o[k]=v;}return o;}
+function slotLabel(tag){
+  if(tag.m==='S') return 'Same file · all channels';
+  if(tag.m==='N') return (tag.s==='base'||tag.s==='b')?'Base layer':'Enhancement layer';
+  const ch=tag.s[0], t=+tag.s.slice(1);
+  if(ch!=='L') return {R:'Red channel',G:'Green channel',B:'Blue channel'}[ch];
+  const names=+tag.t===2?['Left tile','Right tile']:['Top-left tile','Top-right tile','Bottom-left tile','Bottom-right tile'];
+  return names[t]||'Tile '+(t+1);
+}
+function learn(tag){
+  const keep=learned&&learned.mode===tag.m?learned:null;
+  const l={mode:tag.m,colors:+tag.c||(keep?keep.colors:1),tiles:+tag.t||(keep?keep.tiles:1),a:+tag.a||(keep?keep.a:0)};
+  if(learned&&learned.mode===l.mode&&learned.colors===l.colors&&learned.tiles===l.tiles&&learned.a===l.a) return;
+  learned=l;
+  $('detected').innerHTML='Scheme: <b>'+(l.mode==='S'?`Same file to all · ${l.colors} color channel${l.colors>1?'s':''} × ${l.tiles} tile${l.tiles>1?'s':''}`
+    : l.mode==='D'?(l.colors===3?'Different files · color division':`Different files · ${l.tiles} tiles`)
+    : `Layered · base ${Math.round(l.a/2.55)} % power`)+'</b>';
+}
+
+function handleText(text){
+  const p=text.split('|'); if(p[0]!==PROTO||p.length<7) return;
+  const tag=parseTag(p[6]); if(!tag.m) return;
+  learn(tag);
+  const id=p[1];
+  let s=sessions.get(id);
+  if(!s){ s={id,label:slotLabel(tag),K:0,B:0,size:0,cdf:null,blocks:null,waiting:null,recovered:0,seen:new Set(),meta:null,reads:0,dups:0,t0:performance.now(),done:false,dirty:true,el:null};
+          sessions.set(id,s); }
+  if(s.done) return;
+  s.reads++; s.dirty=true;
+  if(p[2]==='M'){ if(!s.meta) s.meta={name:decodeURIComponent(p[3]),mime:p[4],hash:p[5]}; }
+  else if(p.length>=8){
+    const j=+p[2];
+    if(!s.blocks){ s.K=+p[3]; s.B=+p[4]; s.size=+p[5]; s.cdf=robustSolitonCdf(s.K); s.blocks=new Array(s.K).fill(null); s.waiting=Array.from({length:s.K},()=>[]); }
+    if(s.seen.has(j)) s.dups++; else { s.seen.add(j); addPacket(s,neighbours(j,s.K,s.cdf),b64dec(p[7])); }
+  }
+  if(s.blocks&&s.recovered===s.K&&s.meta) finish(s);
+}
+
+/* ---------- peeling decoder (per session) ---------- */
+function addPacket(s,nbrs,data){
+  const left=[];
+  for(const i of nbrs){ if(s.blocks[i]) xorInto(data,s.blocks[i]); else left.push(i); }
+  if(!left.length) return;
+  if(left.length===1){ recover(s,left[0],data); return; }
+  const pkt={nbrs:new Set(left),data};
+  for(const i of left) s.waiting[i].push(pkt);
+}
+function recover(s,b0,d0){
+  const q=[[b0,d0]];
+  while(q.length){
+    const [b,d]=q.pop();
+    if(s.blocks[b]) continue;
+    s.blocks[b]=d; s.recovered++;
+    const list=s.waiting[b]; s.waiting[b]=[];
+    for(const p of list){
+      if(!p.nbrs.has(b)) continue;
+      xorInto(p.data,d); p.nbrs.delete(b);
+      if(p.nbrs.size===1){ const [nb]=p.nbrs; p.nbrs.clear(); if(!s.blocks[nb]) q.push([nb,p.data]); }
+    }
+  }
+}
+
+async function finish(s){
+  s.done=true; s.dirty=true; s.t1=performance.now();
+  const buf=new Uint8Array(s.K*s.B); s.blocks.forEach((b,i)=>buf.set(b,i*s.B));
+  const data=buf.slice(0,s.size); s.ok=(await sha256hex(data))===s.meta.hash;
+  if(s.ok){ s.url=URL.createObjectURL(new Blob([data],{type:s.meta.mime})); navigator.vibrate?.(150); }
+  s.dirty=true; renderSessions();
+}
+
+function renderSessions(){
+  const t=(performance.now()-rxT0)/1000;
+  let extra='';
+  if(learned&&learned.mode==='N') extra=stat('Base reads',nomaCoarseOk)+stat('Enhancement reads',nomaFineOk);
+  $('rxStats').innerHTML=stat('Frames processed',procFrames)+stat('Processing rate',(procFrames/Math.max(t,.001)).toFixed(1)+' fps')+stat('Files seen',sessions.size)+extra;
+  for(const s of sessions.values()){
+    if(!s.dirty) continue; s.dirty=false;
+    if(!s.el){
+      s.el=document.createElement('div'); s.el.className='panel';
+      s.el.innerHTML='<div><span class="chip"></span><span class="filename"></span></div><canvas class="map" height="14"></canvas><div class="readout"></div><div class="result" style="display:flex;flex-direction:column;gap:8px"></div><div class="preview"></div>';
+      $('sessions').appendChild(s.el);
+    }
+    const [head,map,ro,result,prev]=s.el.children;
+    head.children[0].textContent=s.label;
+    head.children[1].textContent=(s.meta?s.meta.name:'File '+s.id)+(s.size?' · '+fmtBytes(s.size):'');
+    const uniq=s.seen.size;
+    ro.innerHTML=stat('Blocks',s.K?s.recovered+' / '+s.K:'–')+stat('Progress',s.K?(100*s.recovered/s.K).toFixed(0)+' %':'–')
+      +stat('Unique packets',uniq)+stat('Overhead',s.K&&uniq?((uniq/s.K-1)*100).toFixed(0)+' %':'–')
+      +stat('Time',(((s.t1||performance.now())-s.t0)/1000).toFixed(1)+' s');
+    if(map.clientWidth){ map.width=map.clientWidth; const c=map.getContext('2d'); c.clearRect(0,0,map.width,map.height);
+      if(s.blocks){ c.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--ok').trim()||'#17803a'; const bw=map.width/s.K;
+        for(let i=0;i<s.K;i++) if(s.blocks[i]) c.fillRect(Math.floor(i*bw),0,Math.ceil(bw),map.height); } }
+    if(s.done&&s.ok!==undefined&&!result.dataset.done){
+      result.dataset.done='1';
+      const secs=((s.t1-s.t0)/1000);
+      result.innerHTML = s.ok
+        ? `<p class="note"><span class="ok">Received and verified.</span> Goodput ${fmtBytes(s.size/secs)}/s.</p><div class="actions"><a class="dl" href="${s.url}" download="${esc(s.meta.name)}">Download ${esc(s.meta.name)}</a></div>`
+        : '<p class="bad">The rebuilt file does not match the sender\'s checksum. Tap Start over and try again.</p>';
+      if(s.ok&&s.meta.mime.startsWith('image/')) prev.innerHTML=`<img src="${s.url}" alt="Received image">`;
+    }
+  }
+}
+</script>
+</body>
+</html>
