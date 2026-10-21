@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QR Fountain Transfer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--fg:#15171a;--card:#fff;--muted:#626a75;--acc:#0b6bcb;--ok:#1a8f3c;--bad:#c62828;--line:#dde1e6}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#121417;--fg:#e9ecef;--card:#1c1f24;--muted:#9aa3ad;--acc:#4ea1ff;--ok:#4cc36f;--bad:#ff6b6b;--line:#30353c}}
+:root[data-theme="dark"]{--bg:#121417;--fg:#e9ecef;--card:#1c1f24;--muted:#9aa3ad;--acc:#4ea1ff;--ok:#4cc36f;--bad:#ff6b6b;--line:#30353c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 2px}
+.sub{color:var(--muted);font-size:13px;margin-bottom:12px}
+.tabs{display:flex;gap:8px;margin-bottom:12px}
+.tabs button{flex:1;font-weight:600}
+button{font:inherit;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+button.primary,.tabs button.active{background:var(--acc);border-color:var(--acc);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:10px 0}
+label{color:var(--muted);font-size:12px;display:block}
+input,select{font:inherit;padding:7px 9px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+input[type=number]{width:96px}
+input[type=file]{width:100%}
+#qrWrap{background:#fff;border-radius:8px;padding:0;margin:10px auto;width:min(92vw,560px)}
+#qr{display:block;width:100%;height:auto;aspect-ratio:1;background:#fff;image-rendering:pixelated}
+#qr:fullscreen{width:auto;height:100vh;margin:auto;background:#fff}
+video{width:100%;max-height:50vh;border-radius:10px;background:#000;object-fit:cover;display:block}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;font-size:12px;color:var(--muted)}
+.stats div{background:var(--bg);border-radius:8px;padding:6px 8px}
+.stats b{display:block;font-size:16px;color:var(--fg)}
+#map{width:100%;height:18px;border-radius:5px;background:var(--bg);display:block;margin:8px 0}
+.muted{color:var(--muted);font-size:13px}
+.ok{color:var(--ok);font-weight:600} .bad{color:var(--bad)}
+a.dl{display:inline-block;margin-top:10px;padding:12px 18px;border-radius:10px;background:var(--ok);color:#fff;text-decoration:none;font-weight:600}
+.hidden{display:none}
+#preview img{max-width:100%;border-radius:8px;margin-top:10px}
+</style>
+</head>
+<body>
+<main>
+<h1>QR Fountain Transfer</h1>
+<div class="sub">One screen broadcasts, any number of phones receive. LT fountain coding: collect any ~K+ε packets, in any order.</div>
+
+<div class="tabs">
+  <button id="tabSend" class="active">Send</button>
+  <button id="tabRecv">Receive</button>
+</div>
+
+<!-- ================= SENDER ================= -->
+<section id="send">
+  <div class="card">
+    <label>1. Choose a file</label>
+    <input type="file" id="file">
+    <div class="row">
+      <span><label>Block size (bytes)</label><input type="number" id="blk" value="500" min="50" max="1800"></span>
+      <span><label>Frames / s</label><input type="number" id="fps" value="8" min="1" max="30"></span>
+      <span><label>QR error correction</label>
+        <select id="ecc"><option>L</option><option selected>M</option><option>Q</option><option>H</option></select></span>
+      <span><label>Info frame every</label><input type="number" id="metaEvery" value="10" min="2" max="100"></span>
+    </div>
+    <div class="row">
+      <button class="primary" id="btnConvert" disabled>2. Convert to QR series</button>
+      <button id="btnPlay" disabled>▶ Play</button>
+      <button id="btnFull" disabled>Fullscreen</button>
+    </div>
+    <div id="sendInfo" class="muted"></div>
+  </div>
+  <div id="qrWrap"><canvas id="qr" width="720" height="720"></canvas></div>
+  <div class="card stats" id="sendStats"></div>
+</section>
+
+<!-- ================= RECEIVER ================= -->
+<section id="recv" class="hidden">
+  <div class="card">
+    <div class="row" style="margin-top:0">
+      <button class="primary" id="btnCam">Open camera &amp; receive</button>
+      <button id="btnCamStop" disabled>Stop camera</button>
+      <button id="btnReset">Reset</button>
+    </div>
+    <div class="muted" id="decoderName">Point the camera at the sender's screen.</div>
+  </div>
+  <video id="video" playsinline muted></video>
+  <div class="card">
+    <div id="recvTitle" class="muted">Waiting for a transfer…</div>
+    <canvas id="map" width="600" height="18"></canvas>
+    <div class="stats" id="recvStats"></div>
+    <div id="result"></div>
+    <div id="preview"></div>
+  </div>
+</section>
+<canvas id="scan" class="hidden"></canvas>
+</main>
+
+<script>
+/* =====================================================================
+   PROTOCOL  (F2 = fountain v2)
+   Data frame : F2|<id>|<j>|<K>|<B>|<size>|<base64 payload of B bytes>
+   Info frame : F2|<id>|M|<uri-encoded name>|<mime>|<sha256 hex>
+   j = packet number (0,1,2,... forever).
+     j <  K : systematic packet = source block j            (degree 1)
+     j >= K : LT packet; neighbours derived from j with a shared PRNG
+              and the Robust Soliton degree distribution.
+   Both sides regenerate neighbours from (j, K) — no index list is sent.
+   ===================================================================== */
+const $=id=>document.getElementById(id);
+const PROTO='F2';
+
+/* ---------- shared helpers ---------- */
+function b64enc(u8){let s='';for(let i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);return btoa(s);}
+function b64dec(str){const s=atob(str),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
+async function sha256hex(buf){const h=await crypto.subtle.digest('SHA-256',buf);return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('');}
+function fmtBytes(n){return n<1024?n.toFixed(0)+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(2)+' MB';}
+function stat(l,v){return `<div>${l}<b>${v}</b></div>`;}
+function xorInto(a,b){for(let i=0;i<a.length;i++)a[i]^=b[i];}
+
+/* ---------- LT code (identical on sender and receiver) ---------- */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+// Robust Soliton CDF (Luby), c=0.1, delta=0.5
+function robustSolitonCdf(K){
+  if(K===1) return new Float64Array([1]);
+  const c=0.1,delta=0.5,R=c*Math.log(K/delta)*Math.sqrt(K);
+  const mu=new Float64Array(K+1);
+  mu[1]=1/K; for(let d=2;d<=K;d++) mu[d]=1/(d*(d-1));          // ideal soliton
+  let s=Math.floor(K/R); if(s<1)s=1; if(s>K)s=K;
+  for(let d=1;d<s;d++) mu[d]+=R/(d*K);                         // tau spike terms
+  const spike=R*Math.log(R/delta)/K; if(spike>0) mu[s]+=spike;
+  let Z=0; for(let d=1;d<=K;d++) Z+=mu[d];
+  const cdf=new Float64Array(K); let acc=0;
+  for(let d=1;d<=K;d++){acc+=mu[d]/Z; cdf[d-1]=acc;}
+  cdf[K-1]=1; return cdf;
+}
+function sampleDegree(cdf,u){let lo=0,hi=cdf.length-1;while(lo<hi){const m=(lo+hi)>>1;if(cdf[m]<u)lo=m+1;else hi=m;}return lo+1;}
+function neighbours(j,K,cdf){
+  if(j<K) return [j];                                         // systematic part
+  const rng=mulberry32((Math.imul(j,0x9E3779B1)^0x85EBCA6B)>>>0);
+  const d=sampleDegree(cdf,rng());
+  const set=new Set(); while(set.size<d) set.add(Math.floor(rng()*K));
+  return [...set];
+}
+
+/* ---------- tabs ---------- */
+$('tabSend').onclick=()=>{$('tabSend').classList.add('active');$('tabRecv').classList.remove('active');$('send').classList.remove('hidden');$('recv').classList.add('hidden');stopCam();};
+$('tabRecv').onclick=()=>{$('tabRecv').classList.add('active');$('tabSend').classList.remove('active');$('recv').classList.remove('hidden');$('send').classList.add('hidden');pause();};
+
+/* ======================= SENDER ======================= */
+let fileBytes=null,fileInfo=null,enc=null,timer=null,frameNo=0,sendT0=0,qrVersion='-',wakeLock=null;
+
+$('file').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  pause(); enc=null; $('btnPlay').disabled=true; $('btnFull').disabled=true;
+  fileBytes=new Uint8Array(await f.arrayBuffer());
+  fileInfo={name:f.name,size:f.size,mime:f.type||'application/octet-stream',hash:await sha256hex(fileBytes)};
+  $('btnConvert').disabled=false;
+  $('sendInfo').innerHTML=`${f.name} — ${fmtBytes(f.size)}`+(f.size>500*1024?' <span class="bad">(large for QR, expect a long transfer)</span>':'');
+};
+
+$('btnConvert').onclick=()=>{
+  pause();
+  const B=Math.max(50,+$('blk').value|0), K=Math.max(1,Math.ceil(fileBytes.length/B));
+  const padded=new Uint8Array(K*B); padded.set(fileBytes);
+  const blocks=[]; for(let i=0;i<K;i++) blocks.push(padded.subarray(i*B,(i+1)*B));
+  const id=Math.random().toString(16).slice(2,6);
+  enc={id,K,B,blocks,cdf:robustSolitonCdf(K),j:0,
+       info:[PROTO,id,'M',encodeURIComponent(fileInfo.name),fileInfo.mime,fileInfo.hash].join('|')};
+  // test the densest frame fits in one QR
+  try{drawQR(packetFrame(0));}catch(e){$('sendInfo').innerHTML='<span class="bad">Block too big for one QR at this error-correction level — reduce block size.</span>';enc=null;return;}
+  frameNo=0;
+  $('btnPlay').disabled=false;$('btnFull').disabled=false;
+  $('sendInfo').innerHTML=`Ready: <b>${K}</b> source blocks of ${B} B, QR version ${qrVersion}. Press Play — the stream is endless; receivers can join any time.`;
+  updateSendStats();
+};
+
+function packetFrame(j){
+  const out=new Uint8Array(enc.B);
+  for(const i of neighbours(j,enc.K,enc.cdf)) xorInto(out,enc.blocks[i]);
+  return [PROTO,enc.id,j,enc.K,enc.B,fileInfo.size,b64enc(out)].join('|');
+}
+function nextFrame(){
+  const every=Math.max(2,+$('metaEvery').value|0);
+  if(frameNo%every===0) return enc.info;
+  return packetFrame(enc.j++);
+}
+function drawQR(text){
+  const qr=qrcode(0,$('ecc').value); qr.addData(text); qr.make();
+  const count=qr.getModuleCount(); qrVersion=(count-17)/4;
+  const c=$('qr'),ctx=c.getContext('2d'),quiet=4,cell=Math.floor(c.width/(count+2*quiet)),off=Math.floor((c.width-cell*count)/2);
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);ctx.fillStyle='#000';
+  for(let r=0;r<count;r++)for(let col=0;col<count;col++)if(qr.isDark(r,col))ctx.fillRect(off+col*cell,off+r*cell,cell,cell);
+}
+
+async function play(){
+  if(!enc) return;
+  const fps=Math.min(30,Math.max(1,+$('fps').value));
+  sendT0=performance.now()-0; 
+  timer=setInterval(()=>{try{drawQR(nextFrame());}catch(e){} frameNo++; updateSendStats();},1000/fps);
+  $('btnPlay').textContent='❚❚ Pause';
+  try{wakeLock=await navigator.wakeLock?.request('screen');}catch(e){}
+}
+function pause(){if(timer){clearInterval(timer);timer=null;}$('btnPlay').textContent='▶ Play';try{wakeLock?.release();}catch(e){}wakeLock=null;}
+$('btnPlay').onclick=()=>timer?pause():play();
+$('btnFull').onclick=()=>{$('qr').requestFullscreen?.().catch(()=>{});};
+
+function updateSendStats(){
+  if(!enc) return;
+  const fps=+$('fps').value, every=+$('metaEvery').value;
+  const dataFps=fps*(1-1/every);
+  $('sendStats').innerHTML=stat('Source blocks K',enc.K)+stat('QR version',qrVersion)
+    +stat('Packets sent',enc.j)+stat('Systematic done',enc.j>=enc.K?'yes':(100*enc.j/enc.K).toFixed(0)+'%')
+    +stat('Raw data rate',fmtBytes(enc.B*dataFps)+'/s')
+    +stat('Est. min time',(enc.K*1.1/dataFps).toFixed(0)+' s');
+}
+
+/* ======================= RECEIVER ======================= */
+let stream=null,scanning=false,detector=null,rx=null;
+
+function newRx(id){
+  return {id,K:0,B:0,size:0,cdf:null,blocks:null,waiting:null,recovered:0,seen:new Set(),
+          meta:null,frames:0,dups:0,useless:0,t0:performance.now(),done:false};
+}
+function resetRx(){rx=null;$('recvTitle').textContent='Waiting for a transfer…';$('recvStats').innerHTML='';$('result').innerHTML='';$('preview').innerHTML='';drawMap();}
+$('btnReset').onclick=resetRx;
+
+async function startCam(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
+  }catch(e){$('decoderName').innerHTML='<span class="bad">Camera unavailable: '+e.message+'. The page must be opened over HTTPS (or localhost) and camera access allowed.</span>';return;}
+  const v=$('video'); v.srcObject=stream; await v.play();
+  detector=null;
+  if('BarcodeDetector' in window){try{const f=await BarcodeDetector.getSupportedFormats();if(f.includes('qr_code'))detector=new BarcodeDetector({formats:['qr_code']});}catch(e){}}
+  $('decoderName').textContent='Decoder: '+(detector?'native BarcodeDetector':'jsQR (JavaScript)')+' — point at the sender screen.';
+  scanning=true;$('btnCam').disabled=true;$('btnCamStop').disabled=false;
+  requestAnimationFrame(scanLoop);
+}
+function stopCam(){scanning=false;stream?.getTracks().forEach(t=>t.stop());stream=null;$('btnCam').disabled=false;$('btnCamStop').disabled=true;}
+$('btnCam').onclick=startCam; $('btnCamStop').onclick=stopCam;
+
+async function scanLoop(){
+  if(!scanning) return;
+  const v=$('video'); let text=null;
+  if(v.readyState>=2){
+    try{
+      if(detector){const r=await detector.detect(v); if(r.length) text=r[0].rawValue;}
+      else{
+        const c=$('scan'),scale=Math.min(1,800/v.videoWidth);
+        c.width=v.videoWidth*scale|0;c.height=v.videoHeight*scale|0;
+        const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(v,0,0,c.width,c.height);
+        const img=ctx.getImageData(0,0,c.width,c.height);
+        const code=jsQR(img.data,c.width,c.height,{inversionAttempts:'dontInvert'}); if(code) text=code.data;
+      }
+    }catch(e){}
+  }
+  if(text) onFrame(text);
+  requestAnimationFrame(scanLoop);
+}
+
+function onFrame(text){
+  const p=text.split('|'); if(p[0]!==PROTO) return;
+  const id=p[1];
+  if(!rx||rx.id!==id){ if(rx&&!rx.done&&rx.recovered>0&&p[2]!=='M'){} rx=newRx(id); $('result').innerHTML='';$('preview').innerHTML=''; }
+  if(rx.done) return;
+  rx.frames++;
+  if(p[2]==='M'&&p.length>=6){
+    if(!rx.meta) rx.meta={name:decodeURIComponent(p[3]),mime:p[4],hash:p[5]};
+  }else if(p.length>=7){
+    const j=+p[2];
+    if(!rx.blocks){ // initialise decoder from the first data packet
+      rx.K=+p[3]; rx.B=+p[4]; rx.size=+p[5]; rx.cdf=robustSolitonCdf(rx.K);
+      rx.blocks=new Array(rx.K).fill(null); rx.waiting=Array.from({length:rx.K},()=>[]);
+    }
+    if(rx.seen.has(j)) rx.dups++;
+    else{ rx.seen.add(j); addPacket(neighbours(j,rx.K,rx.cdf),b64dec(p[6])); }
+  }
+  updateRx();
+  if(rx.blocks&&rx.recovered===rx.K&&rx.meta) finish();
+}
+
+/* ---------- peeling (belief-propagation) decoder ---------- */
+function addPacket(nbrs,data){
+  const left=[];
+  for(const i of nbrs){ if(rx.blocks[i]) xorInto(data,rx.blocks[i]); else left.push(i); }
+  if(left.length===0){ rx.useless++; return; }               // carried no new information
+  if(left.length===1){ recover(left[0],data); return; }
+  const pkt={nbrs:new Set(left),data};
+  for(const i of left) rx.waiting[i].push(pkt);
+}
+function recover(b0,d0){
+  const queue=[[b0,d0]];
+  while(queue.length){
+    const [b,d]=queue.pop();
+    if(rx.blocks[b]) continue;
+    rx.blocks[b]=d; rx.recovered++;
+    const list=rx.waiting[b]; rx.waiting[b]=[];
+    for(const p of list){
+      if(!p.nbrs.has(b)) continue;
+      xorInto(p.data,d); p.nbrs.delete(b);
+      if(p.nbrs.size===1){ const [nb]=p.nbrs; p.nbrs.clear(); if(!rx.blocks[nb]) queue.push([nb,p.data]); }
+    }
+  }
+}
+
+function drawMap(){
+  const c=$('map'),ctx=c.getContext('2d'); c.width=c.clientWidth||600;
+  ctx.clearRect(0,0,c.width,c.height); if(!rx||!rx.blocks) return;
+  const w=c.width/rx.K; ctx.fillStyle=getComputedStyle(document.body).getPropertyValue('--ok');
+  for(let i=0;i<rx.K;i++) if(rx.blocks[i]) ctx.fillRect(Math.floor(i*w),0,Math.ceil(w),c.height);
+}
+function updateRx(){
+  const t=(performance.now()-rx.t0)/1000, K=rx.K||0, uniq=rx.seen.size;
+  $('recvTitle').innerHTML=(rx.meta?`<b>${rx.meta.name}</b>`:'Transfer '+rx.id)+(rx.size?' — '+fmtBytes(rx.size):'');
+  $('recvStats').innerHTML=stat('Blocks recovered',K?rx.recovered+' / '+K:'–')
+    +stat('Progress',K?(100*rx.recovered/K).toFixed(1)+'%':'–')
+    +stat('Unique packets',uniq)+stat('Overhead',K&&uniq?((uniq/K-1)*100).toFixed(0)+'%':'–')
+    +stat('Duplicates',rx.dups)+stat('Decode rate',(rx.frames/Math.max(t,.001)).toFixed(1)+' fps')
+    +stat('Elapsed',t.toFixed(1)+' s');
+  drawMap();
+}
+
+async function finish(){
+  rx.done=true;
+  const t=(performance.now()-rx.t0)/1000;
+  const buf=new Uint8Array(rx.K*rx.B); rx.blocks.forEach((b,i)=>buf.set(b,i*rx.B));
+  const data=buf.slice(0,rx.size), ok=(await sha256hex(data))===rx.meta.hash;
+  const blob=new Blob([data],{type:rx.meta.mime}), url=URL.createObjectURL(blob);
+  const uniq=rx.seen.size;
+  $('result').innerHTML=`<p class="${ok?'ok':'bad'}">${ok?'✔ File received and verified (SHA-256 match)':'✘ Hash mismatch — file corrupted'}</p>
+    <div class="stats">${stat('Total time',t.toFixed(1)+' s')}${stat('Goodput',fmtBytes(rx.size/t)+'/s')}${stat('Packets used',uniq+' for K='+rx.K)}${stat('Reception overhead',((uniq/rx.K-1)*100).toFixed(1)+'%')}</div>
+    ${ok?`<a class="dl" href="${url}" download="${rx.meta.name.replace(/"/g,'')}">⬇ Download ${rx.meta.name}</a>`:''}`;
+  if(ok&&rx.meta.mime.startsWith('image/')) $('preview').innerHTML=`<img src="${url}" alt="received image">`;
+  navigator.vibrate?.(200);
+  stopCam();
+}
+</script>
+</body>
+</html>
