@@ -193,15 +193,27 @@ input:disabled{opacity:.5}
     <div class="tablewrap" id="runsWrap" hidden>
       <table>
         <thead><tr><th class="num">#</th><th>Label</th><th class="num">Dist. (m)</th><th>Scheme</th><th class="num">Time (s)</th>
-          <th class="num">Frame loss</th><th class="num">Module errors</th><th class="num">Files</th><th class="num">Completion (s)</th><th></th></tr></thead>
+          <th class="num">Frame loss</th><th class="num">Module errors</th><th class="num">Files</th><th class="num">Completion (s)</th><th>GitHub</th><th></th></tr></thead>
         <tbody id="runsBody"></tbody>
       </table>
     </div>
     <p class="note">Frame loss is averaged over the streams in a run. Module errors are raw, before QR error correction. The dataset holds every frame and QR read. To turn it into figures and tables, run the <a href="https://github.com/amro2021/qr-transfer/blob/main/analysis/analyze_qr_lab.py" target="_blank" rel="noopener">analysis script</a>.</p>
     <div class="actions">
-      <button class="primary" id="btnExport" disabled>Download dataset (.zip)</button>
+      <button class="primary" id="btnGh" disabled>Save new runs to GitHub</button>
+      <button id="btnExport" disabled>Download dataset (.zip)</button>
       <button id="btnClearRuns" disabled>Clear saved runs</button>
     </div>
+    <details id="ghBox">
+      <summary class="note" style="cursor:pointer">GitHub settings</summary>
+      <div class="fields" style="margin-top:10px">
+        <label for="ghRepo">Repository<input id="ghRepo" value="amro2021/qr-transfer" autocapitalize="off" spellcheck="false"></label>
+        <label for="ghFolder">Folder<input id="ghFolder" value="data" autocapitalize="off" spellcheck="false"></label>
+        <label for="ghDevice">This phone's name<input id="ghDevice" placeholder="phone-a" autocapitalize="off" spellcheck="false"></label>
+        <label for="ghToken">Access token<input id="ghToken" type="password" autocomplete="off" placeholder="github_pat_…" spellcheck="false"></label>
+      </div>
+      <label class="check" for="ghRemember" style="margin-top:8px"><input type="checkbox" id="ghRemember" checked> Remember the token on this phone</label>
+      <p class="note" style="margin-top:8px">Use a fine-grained token that can only reach this repository, with <b>Contents: Read and write</b> permission. The token stays in this phone's browser and is sent only to GitHub. Each save adds one dataset file, holding only the runs not saved before.</p>
+    </details>
   </div>
 </section>
 </main>
@@ -900,6 +912,9 @@ function updateRunStatus(){
 }
 
 function renderRuns(){
+  const pending=runs.filter(r=>!r.uploaded).length;
+  $('btnGh').textContent=pending?`Save ${pending} new run${pending>1?'s':''} to GitHub`:'All runs saved to GitHub';
+  $('btnGh').disabled=!pending||ghBusy;
   if(!runs.length){ $('runsWrap').hidden=true; $('btnExport').disabled=true; $('btnClearRuns').disabled=true; return; }
   $('runsWrap').hidden=false; $('btnExport').disabled=false; $('btnClearRuns').disabled=false;
   const pct=x=>x===''?'–':(100*x).toFixed(1)+' %';
@@ -907,6 +922,7 @@ function renderRuns(){
     <td class="num">${m.run_id}</td><td>${esc(m.label||'–')}</td><td class="num">${m.distance_m===''?'–':m.distance_m}</td><td>${esc(m.scheme||'–')}</td>
     <td class="num">${m.duration_s}</td><td class="num">${pct(s.mean_frame_loss)}</td><td class="num">${s.mer_pooled===''?'–':(+s.mer_pooled).toExponential(1)}</td>
     <td class="num">${s.files_done}/${s.files_seen}</td><td class="num">${s.max_complete_s===''?'–':s.max_complete_s.toFixed(1)}</td>
+    <td>${r.uploaded?'<span class="ok">Saved</span>':'–'}</td>
     <td><button class="del" data-run="${m.run_id}" aria-label="Delete run ${m.run_id}">Delete</button></td></tr>`;}).join('');
   $('runsBody').querySelectorAll('button.del').forEach(b=>b.onclick=()=>{
     if(b.dataset.armed){ runs=runs.filter(r=>r.meta.run_id!==+b.dataset.run); saveRuns(); renderRuns(); }
@@ -915,7 +931,8 @@ function renderRuns(){
 }
 $('btnClearRuns').onclick=()=>{
   if(Date.now()-clearArmed<4000){ runs=[]; saveRuns(); renderRuns(); $('runStatus').textContent='All saved runs deleted.'; $('btnClearRuns').textContent='Clear saved runs'; clearArmed=0; }
-  else { clearArmed=Date.now(); $('btnClearRuns').textContent=`Tap again to delete ${runs.length} run${runs.length>1?'s':''}`;
+  else { clearArmed=Date.now(); const un=runs.filter(r=>!r.uploaded).length;
+         $('btnClearRuns').textContent=`Tap again to delete ${runs.length} run${runs.length>1?'s':''}`+(un?` (${un} not on GitHub)`:'');
          setTimeout(()=>{ if(Date.now()-clearArmed>=4000) $('btnClearRuns').textContent='Clear saved runs'; },4100); }
 };
 
@@ -961,46 +978,105 @@ goodput_Bps            file size / complete_s.
 sic_variant            index of the successive-interference-cancellation variant in use (layered scheme).
 Times are in milliseconds (t_ms) or seconds (_s) from the start of the run.
 `;
-function buildDataset(){
-  const rows=(key,cols)=>runs.flatMap(r=>(r[key]||[]).map(x=>[r.meta.run_id,...cols.map(c=>x[c])]));
+function buildDataset(list=runs){
+  const rows=(key,cols)=>list.flatMap(r=>(r[key]||[]).map(x=>[r.meta.run_id,...cols.map(c=>x[c])]));
   return [
-    {name:'runs.csv',text:csv([...RUN_COLS,...SUM_COLS],runs.map(r=>[...RUN_COLS.map(c=>r.meta[c]),...SUM_COLS.map(c=>r.summary[c])]))},
+    {name:'runs.csv',text:csv([...RUN_COLS,...SUM_COLS],list.map(r=>[...RUN_COLS.map(c=>r.meta[c]),...SUM_COLS.map(c=>r.summary[c])]))},
     {name:'slots.csv',text:csv(['run_id',...SLOT_COLS],rows('slots',SLOT_COLS))},
     {name:'files.csv',text:csv(['run_id',...FILE_COLS],rows('files',FILE_COLS))},
-    {name:'frames.csv',text:csv(['run_id',...FRAME_COLS],runs.flatMap(r=>r.frames.map(f=>[r.meta.run_id,...f])))},
-    {name:'qrs.csv',text:csv(['run_id',...QR_COLS],runs.flatMap(r=>r.qrs.map(q=>[r.meta.run_id,...q])))},
+    {name:'frames.csv',text:csv(['run_id',...FRAME_COLS],list.flatMap(r=>r.frames.map(f=>[r.meta.run_id,...f])))},
+    {name:'qrs.csv',text:csv(['run_id',...QR_COLS],list.flatMap(r=>r.qrs.map(q=>[r.meta.run_id,...q])))},
     {name:'README.txt',text:README},
   ];
 }
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
 function crc32(b){let c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=CRC_T[(c^b[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
-function makeZip(list){        // uncompressed ("stored") zip
+async function deflateRaw(u8){
+  if(typeof CompressionStream==='undefined') return null;
+  try{ const out=await new Response(new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer(); return new Uint8Array(out); }
+  catch(e){ return null; }
+}
+async function makeZip(list){  // deflate-compressed where the browser supports it, stored otherwise
   const te=new TextEncoder(), parts=[], cen=[], now=new Date();
   const time=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1), date=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate();
+  const put=(dv,spec)=>spec.forEach(([o,v,n])=>n===4?dv.setUint32(o,v,true):dv.setUint16(o,v,true));
   let off=0;
   for(const f of list){
-    const name=te.encode(f.name), data=te.encode(f.text), crc=crc32(data);
+    const name=te.encode(f.name), data=te.encode(f.text), crc=crc32(data), z=await deflateRaw(data);
+    const method=z&&z.length<data.length?8:0, body=method?z:data;
     const lh=new DataView(new ArrayBuffer(30));
-    [[0,0x04034b50,4],[4,20,2],[6,0x0800,2],[8,0,2],[10,time,2],[12,date,2],[14,crc,4],[18,data.length,4],[22,data.length,4],[26,name.length,2],[28,0,2]]
-      .forEach(([o,v,n])=>n===4?lh.setUint32(o,v,true):lh.setUint16(o,v,true));
-    parts.push(new Uint8Array(lh.buffer),name,data);
+    put(lh,[[0,0x04034b50,4],[4,20,2],[6,0x0800,2],[8,method,2],[10,time,2],[12,date,2],[14,crc,4],[18,body.length,4],[22,data.length,4],[26,name.length,2],[28,0,2]]);
+    parts.push(new Uint8Array(lh.buffer),name,body);
     const ch=new DataView(new ArrayBuffer(46));
-    [[0,0x02014b50,4],[4,20,2],[6,20,2],[8,0x0800,2],[10,0,2],[12,time,2],[14,date,2],[16,crc,4],[20,data.length,4],[24,data.length,4],[28,name.length,2],
-     [30,0,2],[32,0,2],[34,0,2],[36,0,2],[38,0,4],[42,off,4]].forEach(([o,v,n])=>n===4?ch.setUint32(o,v,true):ch.setUint16(o,v,true));
+    put(ch,[[0,0x02014b50,4],[4,20,2],[6,20,2],[8,0x0800,2],[10,method,2],[12,time,2],[14,date,2],[16,crc,4],[20,body.length,4],[24,data.length,4],[28,name.length,2],
+            [30,0,2],[32,0,2],[34,0,2],[36,0,2],[38,0,4],[42,off,4]]);
     cen.push(new Uint8Array(ch.buffer),name);
-    off+=30+name.length+data.length;
+    off+=30+name.length+body.length;
   }
   const size=cen.reduce((a,b)=>a+b.length,0), end=new DataView(new ArrayBuffer(22));
-  [[0,0x06054b50,4],[4,0,2],[6,0,2],[8,list.length,2],[10,list.length,2],[12,size,4],[16,off,4],[20,0,2]].forEach(([o,v,n])=>n===4?end.setUint32(o,v,true):end.setUint16(o,v,true));
+  put(end,[[0,0x06054b50,4],[4,0,2],[6,0,2],[8,list.length,2],[10,list.length,2],[12,size,4],[16,off,4],[20,0,2]]);
   return new Blob([...parts,...cen,new Uint8Array(end.buffer)],{type:'application/zip'});
 }
-$('btnExport').onclick=()=>{
-  const url=URL.createObjectURL(makeZip(buildDataset())), a=document.createElement('a');
+$('btnExport').onclick=async()=>{
+  const url=URL.createObjectURL(await makeZip(buildDataset())), a=document.createElement('a');
   const st=new Date().toISOString().slice(0,16).replace(/[-:T]/g,'');
   a.href=url; a.download=`qr-lab-dataset-${st}.zip`; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),10000);
   $('runStatus').textContent=`Dataset with ${runs.length} run${runs.length>1?'s':''} downloaded.`;
 };
+/* ---------- save runs straight to a GitHub repository (Contents API, fine-grained token) ---------- */
+const GH_KEY='qrlab-github-v1';
+let ghBusy=false;
+try{ const g=JSON.parse(localStorage.getItem(GH_KEY)||'{}');
+  for(const k of ['repo','folder','device']) if(g[k]) $('gh'+k[0].toUpperCase()+k.slice(1)).value=g[k];
+  if(g.token) $('ghToken').value=g.token; }catch(e){}
+function rememberGh(){
+  try{ const g={repo:$('ghRepo').value.trim(),folder:$('ghFolder').value.trim(),device:$('ghDevice').value.trim()};
+       if($('ghRemember').checked) g.token=$('ghToken').value.trim();
+       localStorage.setItem(GH_KEY,JSON.stringify(g)); }catch(e){}
+}
+['ghRepo','ghFolder','ghDevice','ghToken','ghRemember'].forEach(id=>$(id).addEventListener('change',rememberGh));
+async function blobToBase64(blob){
+  const u8=new Uint8Array(await blob.arrayBuffer()); let s='';
+  for(let i=0;i<u8.length;i+=0x8000) s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));
+  return btoa(s);
+}
+async function saveToGitHub(){
+  const pending=runs.filter(r=>!r.uploaded);
+  const say=(h)=>{ $('runStatus').innerHTML=h; };
+  if(!pending.length) return say('All runs are already saved to GitHub.');
+  const repo=$('ghRepo').value.trim(), token=$('ghToken').value.trim();
+  const folder=$('ghFolder').value.trim().replace(/^\/+|\/+$/g,'').replace(/[^\w\-\/]/g,'_')||'data';
+  const device=($('ghDevice').value.trim()||'phone').replace(/[^\w\-]/g,'_').slice(0,40);
+  if(!/^[\w.-]+\/[\w.-]+$/.test(repo)||!token){ $('ghBox').open=true; return say('<span class="bad">Enter the repository (owner/name) and an access token in GitHub settings first.</span>'); }
+  rememberGh(); ghBusy=true; renderRuns();
+  say(`Saving ${pending.length} run${pending.length>1?'s':''} to GitHub…`);
+  try{
+    const stamp=new Date().toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);
+    const path=`${folder}/${device}-${stamp}.zip`;
+    const content=await blobToBase64(await makeZip(buildDataset(pending)));
+    const res=await fetch(`https://api.github.com/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`,{
+      method:'PUT',
+      headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},
+      body:JSON.stringify({message:`Add QR lab dataset: ${pending.length} run(s) from ${device}`,content})});
+    if(res.ok){
+      const j=await res.json().catch(()=>({}));
+      pending.forEach(r=>r.uploaded=path); saveRuns();
+      const link=j.content&&j.content.html_url?` <a href="${j.content.html_url}" target="_blank" rel="noopener">View file</a>`:'';
+      say(`<span class="ok">Saved ${pending.length} run${pending.length>1?'s':''} to GitHub</span> as ${esc(path)}.${link}`);
+    }else{
+      const msg={401:'GitHub rejected the token. Check that it was copied in full and has not expired.',
+                 403:`The token can't write to ${esc(repo)}. Give it Contents: Read and write for that repository.`,
+                 404:`GitHub can't find ${esc(repo)}, or the token has no access to it. Check the repository name and the token's repository access.`,
+                 409:'GitHub reported a conflict. Wait a moment and try again.',
+                 422:'GitHub refused the file. If this keeps happening, download the dataset instead.'}[res.status]
+                 ||`GitHub returned an error (${res.status}). Try again, or download the dataset instead.`;
+      say('<span class="bad">'+msg+'</span> Your runs are still on this phone.');
+    }
+  }catch(e){ say('<span class="bad">Could not reach GitHub. Check the internet connection and try again.</span> Your runs are still on this phone.'); }
+  ghBusy=false; renderRuns();
+}
+$('btnGh').onclick=saveToGitHub;
 renderRuns();
 </script>
 </body>

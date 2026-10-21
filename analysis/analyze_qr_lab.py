@@ -331,6 +331,63 @@ Dataset: {len(runs)} runs, {len(fr)} processed camera frames, {len(q)} QR codes 
     print("  wrote METHODS.md")
 
 
+# ---------------------------------------------------------------- results page
+FIG_CAPTIONS = [
+    ("fig_frame_loss_by_stream", "Frame loss per stream vs distance (mean ± 95 % CI over runs)."),
+    ("fig_module_error_rate", "Raw module error rate before QR error correction. Open markers: no errors measured."),
+    ("fig_success_per_frame", "Share of processed camera frames in which each stream was read."),
+    ("fig_completion_time", "Time from the first QR code to a verified file."),
+    ("fig_goodput", "Delivered bytes per second."),
+    ("fig_overhead", "LT fountain reception overhead ε per completed file."),
+    ("fig_progress", "Fraction of blocks recovered over time, one line per run."),
+]
+
+
+def write_index(out, runs, data, sources):
+    import html, datetime
+    figs = "".join(
+        f'<figure><a href="{n}.pdf"><img src="{n}.png" alt="{html.escape(c)}" loading="lazy"></a><figcaption>{html.escape(c)}</figcaption></figure>'
+        for n, c in FIG_CAPTIONS if (out / f"{n}.png").exists())
+    summ = pd.read_csv(out / "summary_by_scheme.csv")
+    cols = ["scheme", "distance_m", "runs", "frame_loss_mean", "mer_mean", "completion_s_mean", "goodput_Bps_mean"]
+    head = "".join(f"<th>{c}</th>" for c in ["Scheme", "Distance (m)", "Runs", "Frame loss", "Module errors", "Completion (s)", "Goodput (B/s)"])
+    def cell(c, v):
+        if pd.isna(v):
+            return "<td>–</td>"
+        if c == "frame_loss_mean":
+            return f'<td class="n">{v * 100:.1f} %</td>'
+        if c == "mer_mean":
+            return f'<td class="n">{v:.1e}</td>'
+        return f'<td class="n">{v:.4g}</td>' if isinstance(v, (int, float, np.number)) else f"<td>{html.escape(str(v))}</td>"
+    body = "".join("<tr>" + "".join(cell(c, r[c]) for c in cols) + "</tr>" for _, r in summ.iterrows())
+    page = f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QR Lab Results</title><style>
+:root{{--bg:#f3f5f7;--fg:#14181d;--muted:#5d6874;--line:#d9dee4;--card:#fff;--acc:#0a62b8}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#0f1317;--fg:#e6eaee;--muted:#95a0ab;--line:#2a323b;--card:#171c22;--acc:#4f9cf0;color-scheme:dark}}}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 Georgia,"Times New Roman",serif}}
+main{{max-width:1100px;margin:0 auto;padding:20px max(16px,env(safe-area-inset-right)) 48px max(16px,env(safe-area-inset-left))}}
+h1{{font-size:24px;margin:0 0 4px}} p{{color:var(--muted);margin:0 0 16px}} a{{color:var(--acc)}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}}
+figure{{margin:0;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px}}
+figure img{{width:100%;height:auto;display:block}} figcaption{{color:#444;font-size:13px;padding:6px 4px 0}}
+.wrap{{overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin:16px 0;background:var(--card)}}
+table{{border-collapse:collapse;width:100%;font-size:13px}} th,td{{padding:6px 9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}}
+td.n{{text-align:right;font-variant-numeric:tabular-nums}} ul{{padding-left:20px}}
+</style></head><body><main>
+<h1>QR Lab Results</h1>
+<p>{len(runs)} runs, {len(data['frames'])} processed frames and {len(data['qrs'])} QR reads from {len(sources)} dataset file(s).
+Updated {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}.</p>
+<div class="wrap"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>
+<div class="grid">{figs}</div>
+<h2 style="font-size:18px;margin-top:24px">Files</h2>
+<ul><li><a href="summary_by_scheme.csv">summary_by_scheme.csv</a> · <a href="summary_by_scheme.tex">summary_by_scheme.tex</a></li>
+<li><a href="summary_by_stream.csv">summary_by_stream.csv</a></li><li><a href="METHODS.md">METHODS.md</a> (metric definitions)</li>
+<li>Figures as PDF: tap any figure.</li></ul>
+</main></body></html>"""
+    (out / "index.html").write_text(page)
+    print("  wrote index.html")
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -358,6 +415,7 @@ def main():
     fig_progress(data, out)
     summ = tables(runs, prs, out)
     methods(data, runs, out)
+    write_index(out, runs, data, a.datasets)
 
     print("\nSummary by scheme and distance")
     view = summ[["scheme", "distance_m", "runs", "frame_loss_mean", "mer_mean", "completion_s_mean", "goodput_Bps_mean"]]
