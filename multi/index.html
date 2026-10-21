@@ -65,6 +65,11 @@ video{width:100%;max-height:45vh;border-radius:10px;background:#000;object-fit:c
 a.dl{display:inline-block;padding:11px 16px;border-radius:10px;background:var(--ok);color:#fff;text-decoration:none;font-weight:600}
 .sessions{display:flex;flex-direction:column;gap:10px}
 .preview img{max-width:100%;border-radius:8px}
+.pickbox{display:flex;flex-direction:column;gap:8px;padding-top:4px;border-top:1px solid var(--line)}
+.pickbox[hidden]{display:none}
+.pickrow{display:flex;flex-wrap:wrap;gap:6px}
+.chipbtn{padding:7px 13px;border-radius:999px;font-size:13px;display:inline-flex;align-items:center}
+.chipbtn[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
 .check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--fg)}
 .check input{width:18px;height:18px}
 .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
@@ -170,6 +175,11 @@ input:disabled{opacity:.5}
       <label for="res">Processing resolution<select id="res"><option value="720">720 px · faster</option><option value="960" selected>960 px</option><option value="1280">1280 px · sharper</option></select></label>
     </div>
     <p class="note" id="detected">Scheme: not detected yet.</p>
+    <div class="pickbox" id="pickBox" hidden>
+      <span class="step">Receive</span>
+      <p class="note" id="pickHint"></p>
+      <div id="pickRows" style="display:flex;flex-direction:column;gap:8px"></div>
+    </div>
   </div>
   <div class="panel" id="expPanel">
     <span class="step">Experiment log</span>
@@ -206,13 +216,13 @@ input:disabled{opacity:.5}
     <details id="ghBox">
       <summary class="note" style="cursor:pointer">GitHub settings</summary>
       <div class="fields" style="margin-top:10px">
-        <label for="ghRepo">Repository<input id="ghRepo" value="amro2021/qr-transfer" autocapitalize="off" spellcheck="false"></label>
+        <label for="ghRepo">Repository<input id="ghRepo" value="amro2021/qr-lab-data" autocapitalize="off" spellcheck="false"></label>
         <label for="ghFolder">Folder<input id="ghFolder" value="data" autocapitalize="off" spellcheck="false"></label>
         <label for="ghDevice">This phone's name<input id="ghDevice" placeholder="phone-a" autocapitalize="off" spellcheck="false"></label>
         <label for="ghToken">Access token<input id="ghToken" type="password" autocomplete="off" placeholder="github_pat_…" spellcheck="false"></label>
       </div>
       <label class="check" for="ghRemember" style="margin-top:8px"><input type="checkbox" id="ghRemember" checked> Remember the token on this phone</label>
-      <p class="note" style="margin-top:8px">Use a fine-grained token that can only reach this repository, with <b>Contents: Read and write</b> permission. The token stays in this phone's browser and is sent only to GitHub. Each save adds one dataset file, holding only the runs not saved before.</p>
+      <p class="note" style="margin-top:8px">Datasets go to a separate data repository, so a token shared with a class can't change this website. Use a fine-grained token limited to that repository, with <b>Contents: Read and write</b> permission only. The token stays in this phone's browser and is sent only to GitHub. Each save adds one dataset file, holding only the runs not saved before.</p>
     </details>
   </div>
 </section>
@@ -323,9 +333,8 @@ function makeEnc(file,B){
   let id; do{id=Math.random().toString(16).slice(2,6);}while(usedIds.has(id)); usedIds.add(id);
   return {id,K,B,blocks,cdf:robustSolitonCdf(K),j:0,count:0,file};
 }
-function encText(enc,tag,allowInfo,shortTag){
-  const every=Math.max(2,+$('every').value|0);
-  if(allowInfo && (enc.count++%every===0))
+function encText(enc,tag,isInfo,shortTag){
+  if(isInfo)
     return [PROTO,enc.id,'M',encodeURIComponent(enc.file.name),enc.file.mime,enc.file.hash,tag].join('|');
   const j=enc.j++, out=new Uint8Array(enc.B);
   for(const i of neighbours(j,enc.K,enc.cdf)) xorInto(out,enc.blocks[i]);
@@ -395,14 +404,21 @@ function compose(items,p){
   ctx.putImageData(img,0,0);
 }
 function frameItems(p){
-  const items=[], k=',k='+frameNo.toString(36);   // sender frame counter in every QR
-  for(const st of p.streams) for(const sl of st.slots) items.push({...sl,mat:matrix(encText(st.enc,sl.tag+k,sl.info,sl.short?sl.short+k:undefined))});
+  const items=[], k=',k='+frameNo.toString(36), every=Math.max(2,+$('every').value|0);   // k = sender frame counter in every QR
+  let idx=0;
+  for(const st of p.streams) for(const sl of st.slots){
+    const isInfo=sl.info&&((frameNo+idx)%every===0);   // each slot carries a file-info frame every `every` frames, staggered,
+    idx++;                                             // so a receiver that keeps only one slot still learns the file name
+    items.push({...sl,mat:matrix(encText(st.enc,sl.tag+k,isInfo,sl.short?sl.short+k:undefined))});
+  }
   return items;
 }
 
 $('btnConvert').onclick=()=>{
   pause();
-  try{ plan=buildPlan(); compose(frameItems(plan),plan); }
+  try{ plan=buildPlan();
+       for(const st of plan.streams) matrix(encText(st.enc,st.slots[0].tag+',k=zzzzz',false,st.slots[0].short?st.slots[0].short+',k=zzzzz':undefined)); // largest data frame must fit
+       compose(frameItems(plan),plan); }
   catch(e){ plan=null; $('sendInfo').innerHTML='<span class="bad">A block is too big for one QR code at this error-correction level. Lower the block size.</span>'; return; }
   frameNo=0; $('btnPlay').disabled=false; $('btnFull').disabled=false;
   const qrs=plan.streams.reduce((a,s)=>a+s.slots.length,0)+(plan.mode==='N'?0:0);
@@ -450,7 +466,7 @@ async function startCam(){
 }
 function stopCam(){scanning=false;stream?.getTracks().forEach(t=>t.stop());stream=null;$('btnCam').disabled=false;$('btnCamStop').disabled=true;}
 $('btnCam').onclick=startCam; $('btnCamStop').onclick=stopCam;
-function resetDecoding(){sessions.clear();learned=null;$('sessions').innerHTML='';$('rxStats').innerHTML='';$('detected').textContent='Scheme: not detected yet.';sicIdx=nomaFails=nomaFineOk=nomaCoarseOk=0;procFrames=0;rxT0=performance.now();}
+function resetDecoding(){sessions.clear();learned=null;$('pickBox').hidden=true;$('sessions').innerHTML='';$('rxStats').innerHTML='';$('detected').textContent='Scheme: not detected yet.';sicIdx=nomaFails=nomaFineOk=nomaCoarseOk=0;procFrames=0;rxT0=performance.now();}
 $('btnReset').onclick=()=>{ if(!run) resetDecoding(); };
 
 function getBuf(i,w,h){ if(!bufs[i]||bufs[i].width!==w||bufs[i].height!==h) bufs[i]=new ImageData(w,h); return bufs[i]; }
@@ -544,13 +560,17 @@ function regions(w,h,tiles){
   return R;
 }
 async function decodeMultiplexed(frame,w,h){
-  const chans=!learned?[0,1,2]:(learned.colors===3?[0,1,2]:['L']);
-  const tiles=learned?learned.tiles:1;
+  let chans=!learned?[0,1,2]:(learned.colors===3?[0,1,2]:['L']);
+  if(pick.color!=='*'&&(!learned||learned.colors===3)) chans=[{R:0,G:1,B:2}[pick.color]];   // only the chosen color plane
+  const tiles=learned?learned.tiles:1, oneTile=tiles>1&&pick.tile!=='*';
   for(let i=0;i<chans.length;i++){
     const vals=channelValues(frame.data,w,h,chans[i]), {lo,hi}=percentiles(vals,w);
     const img=binarize(vals,w,h,(lo+hi)/2,getBuf(i,w,h));
     let found=0;
-    if(detector||tiles===1){
+    if(oneTile){                                        // only the chosen part of the screen
+      const [x0,y0,x1,y1]=regions(w,h,tiles)[+pick.tile];
+      await decodeAll(crop(img,w,x0,y0,x1,y1),x1-x0,y1-y0,detector?2:1,onDecoded);
+    }else if(detector||tiles===1){
       const res=await decodeAll(img,w,h,detector?8:1,onDecoded); found=res.length;
     }
     if(!detector&&(tiles>1||(!learned&&!found))){
@@ -558,6 +578,7 @@ async function decodeMultiplexed(frame,w,h){
         await decodeAll(crop(img,w,x0,y0,x1,y1),x1-x0,y1-y0,1,onDecoded);
       }
     }
+    if(oneTile) continue;
     if(learned&&learned.mode==='N') return;          // switched scheme mid-frame
   }
 }
@@ -601,6 +622,7 @@ async function decodeLayered(frame,w,h){
   const L=c.location, n=17+4*c.version;
   onDecoded(c.data,cornersOf([L.topLeftCorner,L.topRightCorner,L.bottomRightCorner,L.bottomLeftCorner]),coarseImg,w,h,n);
   nomaCoarseOk++; if(FRAME) FRAME.base=1;
+  if(pick.layer==='b') return;                          // base layer only: skip interference cancellation
   const box=boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0.04);
   const {lo,hi}=percentiles(Y,w,boxFromCorners([L.topLeftCorner,L.topRightCorner,L.bottomLeftCorner,L.bottomRightCorner],w,h,0)), span=Math.max(16,hi-lo);
   const ac=learned.a||170, af=255-ac, tc=255-(ac+af)/2;
@@ -667,6 +689,46 @@ function learn(tag){
   $('detected').innerHTML='Scheme: <b>'+(l.mode==='S'?`Same file to all · ${l.colors} color channel${l.colors>1?'s':''} × ${l.tiles} tile${l.tiles>1?'s':''}`
     : l.mode==='D'?(l.colors===3?'Different files · color division':`Different files · ${l.tiles} tiles`)
     : `Layered · base ${Math.round(l.a/2.55)} % power`)+'</b>';
+  renderPick();
+}
+
+/* ---------- choosing which streams this receiver keeps ---------- */
+let pick={color:'*',tile:'*',layer:'*'};
+function pickOptions(l){
+  if(!l) return [];
+  if(l.mode==='N') return [{key:'layer',label:'Layer',opts:[['*','Both layers'],['b','Base only'],['e','Enhancement only']]}];
+  const rows=[];
+  if(l.colors===3) rows.push({key:'color',label:'Color',opts:[['*','All colors'],['R','Red'],['G','Green'],['B','Blue']]});
+  if(l.tiles>1) rows.push({key:'tile',label:'Tile',opts:[['*','All tiles'],...(l.tiles===2?['Left','Right']:['Top-left','Top-right','Bottom-left','Bottom-right']).map((n,i)=>[String(i),n])]});
+  return rows;
+}
+function slotAllowed(slot){
+  if(slot==='b') return pick.layer!=='e';
+  if(slot==='e') return pick.layer!=='b';
+  const ch=slot[0], t=slot.slice(1);
+  if(pick.color!=='*'&&ch!=='L'&&ch!==pick.color) return false;
+  if(pick.tile!=='*'&&t!==pick.tile) return false;
+  return true;
+}
+function pickLabel(){ return ['color','tile','layer'].map(k=>pick[k]).join('/'); }
+function renderPick(){
+  const box=$('pickBox');
+  if(!learned){ box.hidden=true; return; }                 // keep the choice while waiting for the next detection
+  const rows=pickOptions(learned);
+  for(const k of ['color','tile','layer']) if(!rows.some(r=>r.key===k)) pick[k]='*';
+  if(!rows.length){ box.hidden=true; return; }
+  box.hidden=false;
+  $('pickHint').textContent = learned.mode==='D' ? 'Choose your stream to receive only your file. The other files are dropped.'
+    : learned.mode==='N' ? 'Choose the layers to keep. The enhancement layer can only be read after the base layer, so the base is still decoded, just not saved.'
+    : 'Every stream carries the same file. Keep only some of them to test their reception on their own.';
+  $('pickRows').innerHTML=rows.map(r=>`<div class="pickrow" role="group" aria-label="${r.label}">`+r.opts.map(([v,n])=>
+    `<button type="button" class="chipbtn" data-k="${r.key}" data-v="${v}" aria-pressed="${pick[r.key]===v}">`
+    +(r.key==='color'&&v!=='*'?`<i class="swatch" style="background:${COLOR_SW[v]}"></i>`:'')+`${n}</button>`).join('')+'</div>').join('');
+  $('pickRows').querySelectorAll('button').forEach(b=>b.onclick=()=>{ pick[b.dataset.k]=b.dataset.v; applyPick(); renderPick(); });
+}
+function applyPick(){                                     // stop and drop files from streams that are no longer kept
+  if(!learned||learned.mode==='S') return;
+  for(const [id,s] of [...sessions]) if(s.slot&&!slotAllowed(s.slot)){ if(s.el) s.el.remove(); sessions.delete(id); }
 }
 
 /* parse one QR text, feed its file's decoder, and return what was read (for the experiment log) */
@@ -676,9 +738,10 @@ function handleText(text){
   learn(tag);
   const id=p[1], isInfo=p[2]==='M';
   const slot=tag.s==='base'?'b':tag.s==='enh'?'e':(tag.s||'');      // one name per layer in the log
+  if(!slotAllowed(slot)) return null;                  // a stream this receiver chose not to keep
   const info={id,slot,j:isInfo?-1:+p[2],k:tag.k?parseInt(tag.k,36):'',isInfo,isNew:false};
   let s=sessions.get(id);
-  if(!s){ s={id,label:slotLabel(tag),K:0,B:0,size:0,cdf:null,blocks:null,waiting:null,recovered:0,seen:new Set(),meta:null,reads:0,dups:0,
+  if(!s){ s={id,slot,label:slotLabel(tag),K:0,B:0,size:0,cdf:null,blocks:null,waiting:null,recovered:0,seen:new Set(),meta:null,reads:0,dups:0,
              t0:performance.now(),tFirst:run?performance.now()-run.t0:0,done:false,dirty:true,el:null};
           sessions.set(id,s); }
   s.reads++;
@@ -893,7 +956,7 @@ function stopRun(){
     mode:learned?learned.mode:'',colors:learned?learned.colors:'',tiles:learned?learned.tiles:'',base_amp:learned&&learned.mode==='N'?learned.a:'',
     ecc:learned?learned.e:'',sender_fps:learned?learned.f:'',
     device:(navigator.userAgent||'').slice(0,160),video_res:st.width?`${st.width}x${st.height}`:'',camera_fps:st.frameRate?r4(st.frameRate):'',
-    proc_res:+$('res').value,decoder:detector?'BarcodeDetector':'jsQR',mer_measured:r.mer?1:0});
+    proc_res:+$('res').value,decoder:detector?'BarcodeDetector':'jsQR',mer_measured:r.mer?1:0,receive_filter:pickLabel()});
   const {slots,files,summary}=summarise(r);
   runs.push({meta:r.meta,summary,slots,files,frames:r.frames,qrs:r.qrs});
   const saved=saveRuns();
@@ -942,7 +1005,7 @@ function csv(cols,rows){
   return cols.join(',')+'\n'+rows.map(r=>r.map(f).join(',')).join('\n')+'\n';
 }
 const RUN_COLS=['run_id','label','distance_m','notes','start_iso','duration_s','scheme','mode','colors','tiles','base_amp','ecc','sender_fps',
-  'device','video_res','camera_fps','proc_res','decoder','mer_measured'];
+  'device','video_res','camera_fps','proc_res','decoder','mer_measured','receive_filter'];
 const SUM_COLS=['frames_processed','proc_fps','mean_proc_ms','qr_reads','slots_seen','mean_frame_loss','mer_pooled','files_seen','files_done','max_complete_s','total_goodput_Bps'];
 const SLOT_COLS=['slot','stream','file_ids','qr_reads','distinct_sender_frames','sender_frames_in_window','frame_loss','success_per_processed_frame',
   'mer_codes_measured','modules_measured','module_errors','mer_pooled','mer_median'];
@@ -976,6 +1039,7 @@ overhead               unique packets needed / K - 1 (LT fountain reception over
 complete_s             time from the first QR of a file to its verified reconstruction.
 goodput_Bps            file size / complete_s.
 sic_variant            index of the successive-interference-cancellation variant in use (layered scheme).
+receive_filter         streams the receiver kept, as color/tile/layer (* = all).
 Times are in milliseconds (t_ms) or seconds (_s) from the start of the run.
 `;
 function buildDataset(list=runs){
@@ -1055,10 +1119,16 @@ async function saveToGitHub(){
     const stamp=new Date().toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15);
     const path=`${folder}/${device}-${stamp}.zip`;
     const content=await blobToBase64(await makeZip(buildDataset(pending)));
-    const res=await fetch(`https://api.github.com/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`,{
-      method:'PUT',
-      headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},
-      body:JSON.stringify({message:`Add QR lab dataset: ${pending.length} run(s) from ${device}`,content})});
+    let res;
+    for(let attempt=0;attempt<4;attempt++){        // many phones saving at once can collide on the branch: wait and retry
+      res=await fetch(`https://api.github.com/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`,{
+        method:'PUT',
+        headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},
+        body:JSON.stringify({message:`Add QR lab dataset: ${pending.length} run(s) from ${device}`,content})});
+      if(res.status!==409) break;
+      say(`GitHub is busy with other saves. Retrying (${attempt+1} of 3)…`);
+      await new Promise(r=>setTimeout(r,1000+Math.random()*3000*(attempt+1)));
+    }
     if(res.ok){
       const j=await res.json().catch(()=>({}));
       pending.forEach(r=>r.uploaded=path); saveRuns();
@@ -1068,7 +1138,7 @@ async function saveToGitHub(){
       const msg={401:'GitHub rejected the token. Check that it was copied in full and has not expired.',
                  403:`The token can't write to ${esc(repo)}. Give it Contents: Read and write for that repository.`,
                  404:`GitHub can't find ${esc(repo)}, or the token has no access to it. Check the repository name and the token's repository access.`,
-                 409:'GitHub reported a conflict. Wait a moment and try again.',
+                 409:'GitHub is still busy with other saves. Wait a minute and try again.',
                  422:'GitHub refused the file. If this keeps happening, download the dataset instead.'}[res.status]
                  ||`GitHub returned an error (${res.status}). Try again, or download the dataset instead.`;
       say('<span class="bad">'+msg+'</span> Your runs are still on this phone.');

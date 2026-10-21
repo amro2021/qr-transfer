@@ -388,6 +388,28 @@ Updated {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M U
     print("  wrote index.html")
 
 
+def write_readme(out, runs, data, sources):
+    import datetime
+    summ = pd.read_csv(out / "summary_by_scheme.csv")
+    lines = ["# QR Lab Results", "",
+             f"{len(runs)} runs, {len(data['frames'])} processed frames and {len(data['qrs'])} QR reads from "
+             f"{len(sources)} dataset file(s). Updated {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}.", "",
+             "| Scheme | Distance (m) | Runs | Frame loss | Module errors | Completion (s) | Goodput (B/s) |",
+             "|---|---:|---:|---:|---:|---:|---:|"]
+    f = lambda v, k: "–" if pd.isna(v) else (f"{v * 100:.1f} %" if k == "fl" else f"{v:.1e}" if k == "mer" else f"{v:.4g}")
+    for _, r in summ.iterrows():
+        lines.append(f"| {r.scheme} | {f(r.distance_m, '')} | {r.runs} | {f(r.frame_loss_mean, 'fl')} | {f(r.mer_mean, 'mer')} | "
+                     f"{f(r.completion_s_mean, '')} | {f(r.goodput_Bps_mean, '')} |")
+    lines.append("")
+    for n, c in FIG_CAPTIONS:
+        if (out / f"{n}.png").exists():
+            lines += [f"### {c}", "", f"![{c}]({n}.png)", "", f"[PDF]({n}.pdf)", ""]
+    lines += ["Tables: [summary_by_scheme.csv](summary_by_scheme.csv) · [summary_by_scheme.tex](summary_by_scheme.tex) · "
+              "[summary_by_stream.csv](summary_by_stream.csv) · [METHODS.md](METHODS.md)", ""]
+    (out / "README.md").write_text("\n".join(lines))
+    print("  wrote README.md")
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -416,6 +438,7 @@ def main():
     summ = tables(runs, prs, out)
     methods(data, runs, out)
     write_index(out, runs, data, a.datasets)
+    write_readme(out, runs, data, a.datasets)
 
     print("\nSummary by scheme and distance")
     view = summ[["scheme", "distance_m", "runs", "frame_loss_mean", "mer_mean", "completion_s_mean", "goodput_Bps_mean"]]
