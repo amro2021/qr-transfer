@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="../lib/qrlink.js"></script>
 <style>
 /* Layout: one narrow column, two roles (teacher / student) as tabs; codes set in mono like exam slips */
 :root{
@@ -190,19 +191,19 @@ td button{padding:6px 12px;font-size:13px}
     <label for="qTitle">Quiz title<input id="qTitle" placeholder="Quiz 3 · Signals and Systems"></label>
     <div id="groupRows" style="display:flex;flex-direction:column;gap:10px"></div>
     <div class="actions"><button id="btnAddGroup">Add group</button></div>
-    <p class="note">Each group gets its own file and code. Use one group if everyone takes the same quiz. Keep files small, ideally a text-only PDF under 50 KB, so the class receives it in a minute or two.</p>
+    <p class="note">Each group gets its own file and code. Use one group if everyone takes the same quiz. Every phone receives all versions, so the total size sets the time: at the default settings about 30 s per 100 KB in total, for seats within a few metres.</p>
   </div>
 
   <div class="panel">
     <details>
       <summary class="note" style="cursor:pointer">Broadcast settings</summary>
       <div class="fields" style="margin-top:10px">
-        <label for="blk">Block size (bytes)<input type="number" id="blk" value="100" min="40" max="600"></label>
-        <label for="fps">Frames per second<input type="number" id="fps" value="6" min="1" max="15"></label>
-        <label for="ecc">QR error correction<select id="ecc"><option>L</option><option selected>M</option><option>Q</option></select></label>
+        <label for="blk">Block size (bytes)<input type="number" id="blk" value="400" min="40" max="1200"></label>
+        <label for="fps">Frames per second<input type="number" id="fps" value="12" min="1" max="30"></label>
+        <label for="ecc">QR error correction<select id="ecc"><option selected>L</option><option>M</option><option>Q</option></select></label>
         <label for="scrH">Projected image height (m)<input type="number" id="scrH" value="1.5" min="0.3" max="6" step="0.1"></label>
       </div>
-      <p class="note" style="margin-top:8px">Smaller blocks make bigger QR modules that can be read from farther away, but the transfer takes longer.</p>
+      <p class="note" style="margin-top:8px">Smaller blocks or fewer frames per second make bigger QR modules that read from farther away, but the transfer takes longer. The defaults aim at about 30 s per 100 KB.</p>
     </details>
     <span class="step">2 · Encrypt and broadcast</span>
     <div class="actions">
@@ -243,19 +244,18 @@ td button{padding:6px 12px;font-size:13px}
 
 <script>
 /* =====================================================================
-   PROTOCOL QZ1 (one black-and-white stream, LT fountain code)
-   Data : QZ1|<id>|<j>|<K>|<B>|<size>|<base64 payload>
-   Info : QZ1|<id>|M|<uri title>|<sha256 of bundle>|<versions>|<B>
+   Link: lib/qrlink.js (protocol v3, prefix "QZ3"): base45 alphanumeric QR codes, binary header,
+   LT fountain code decoded by peeling + Gaussian elimination, refresh-locked frame timing.
    The transmitted file is an encrypted bundle:
      "QZB1" | salt(16) | PBKDF2 iterations(u32) | count(u16) | count × [ iv(12) | length(u32) | AES-GCM ciphertext ]
    Each entry = one group's version, encrypted with a key derived from that group's code
    (PBKDF2-SHA-256 → AES-256-GCM). Plaintext = u32 header length | JSON {group,name,mime} | file bytes.
    Entries are shuffled, so position does not reveal the group. A wrong code fails the GCM check.
-   Relays rebroadcast the same id and block size with packet numbers far from the teacher's,
-   so a receiver can combine packets from the projector and from neighbours' phones.
+   Relays rebroadcast with the same stream id and block size and with packet numbers far from the
+   teacher's, so a receiver combines packets from the projector and from neighbours' phones.
    ===================================================================== */
 const $=id=>document.getElementById(id);
-const PROTO='QZ1', ITER=150000, CODE_ALPH='23456789ABCDEFGHJKLMNPQRSTUVWXYZ', EVERY=10;
+const PREFIX='QZ3', ITER=150000, CODE_ALPH='23456789ABCDEFGHJKLMNPQRSTUVWXYZ', EVERY=30, Q=QRLink;
 const LS={get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}},
           set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true;}catch(e){return false;}},
           del(k){try{localStorage.removeItem(k);}catch(e){}}};
@@ -264,63 +264,12 @@ const LS={get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.par
 function b64enc(u8){let s='';for(let i=0;i<u8.length;i+=0x8000)s+=String.fromCharCode.apply(null,u8.subarray(i,i+0x8000));return btoa(s);}
 function b64dec(str){const s=atob(str),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
 async function sha256hex(buf){const h=await crypto.subtle.digest('SHA-256',buf);return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('');}
+const fromHex=h=>new Uint8Array(h.match(/../g).map(x=>parseInt(x,16)));
 function fmtBytes(n){return n<1024?n.toFixed(0)+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(2)+' MB';}
 function fmtTime(s){s=Math.max(1,Math.round(s));if(s<60)return s+' s';const m=Math.floor(s/60),r=s%60;return m+' min'+(r?' '+r+' s':'');}
 function stat(l,v){return `<div>${l}<b>${v}</b></div>`;}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-function xorInto(a,b){for(let i=0;i<a.length;i++)a[i]^=b[i];}
 function randomId(){return [...crypto.getRandomValues(new Uint8Array(3))].map(b=>b.toString(16).padStart(2,'0')).join('');}
-
-/* ---------- LT fountain code ---------- */
-function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
-function robustSolitonCdf(K){
-  if(K===1) return new Float64Array([1]);
-  const c=0.1,delta=0.5,R=c*Math.log(K/delta)*Math.sqrt(K);
-  const mu=new Float64Array(K+1);
-  mu[1]=1/K; for(let d=2;d<=K;d++) mu[d]=1/(d*(d-1));
-  let s=Math.floor(K/R); if(s<1)s=1; if(s>K)s=K;
-  for(let d=1;d<s;d++) mu[d]+=R/(d*K);
-  const spike=R*Math.log(R/delta)/K; if(spike>0) mu[s]+=spike;
-  let Z=0; for(let d=1;d<=K;d++) Z+=mu[d];
-  const cdf=new Float64Array(K); let acc=0;
-  for(let d=1;d<=K;d++){acc+=mu[d]/Z; cdf[d-1]=acc;}
-  cdf[K-1]=1; return cdf;
-}
-function sampleDegree(cdf,u){let lo=0,hi=cdf.length-1;while(lo<hi){const m=(lo+hi)>>1;if(cdf[m]<u)lo=m+1;else hi=m;}return lo+1;}
-function neighbours(j,K,cdf){
-  if(j<K) return [j];
-  const rng=mulberry32((Math.imul(j,0x9E3779B1)^0x85EBCA6B)>>>0);
-  const d=sampleDegree(cdf,rng());
-  const set=new Set(); while(set.size<d) set.add(Math.floor(rng()*K));
-  return [...set];
-}
-
-/* ---------- QR drawing ---------- */
-function drawQR(canvas,text,ecc){
-  const q=qrcode(0,ecc); q.addData(text); q.make();
-  const n=q.getModuleCount(), S=canvas.width, cell=Math.floor(S/(n+8)), off=Math.floor((S-cell*n)/2);
-  const ctx=canvas.getContext('2d'); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,S,S); ctx.fillStyle='#000000';
-  for(let r=0;r<n;r++) for(let c=0;c<n;c++) if(q.isDark(r,c)) ctx.fillRect(off+c*cell,off+r*cell,cell,cell);
-  return n;
-}
-
-/* ---------- broadcaster (teacher and relays) ---------- */
-function makeBroadcast(bytes,o){
-  const B=o.B, K=Math.max(1,Math.ceil(bytes.length/B)), padded=new Uint8Array(K*B); padded.set(bytes);
-  const blocks=[]; for(let i=0;i<K;i++) blocks.push(padded.subarray(i*B,(i+1)*B));
-  return {id:o.id,B,K,size:bytes.length,blocks,cdf:robustSolitonCdf(K),j:o.jStart||0,frame:0,title:o.title,hash:o.hash,count:o.count,timer:null,sent:0};
-}
-function infoText(bc){ return [PROTO,bc.id,'M',encodeURIComponent(bc.title),bc.hash,bc.count,bc.B].join('|'); }
-function dataText(bc,j){
-  const out=new Uint8Array(bc.B); for(const i of neighbours(j,bc.K,bc.cdf)) xorInto(out,bc.blocks[i]);
-  return [PROTO,bc.id,j,bc.K,bc.B,bc.size,b64enc(out)].join('|');
-}
-function nextText(bc){ return (bc.frame++%EVERY===0)?infoText(bc):dataText(bc,bc.j++); }
-function startBroadcast(bc,canvas,fps,ecc,onTick){
-  stopBroadcast(bc);
-  bc.timer=setInterval(()=>{ try{drawQR(canvas,nextText(bc),ecc);}catch(e){} bc.sent++; if(onTick) onTick(); },1000/fps);
-}
-function stopBroadcast(bc){ if(bc&&bc.timer){clearInterval(bc.timer);bc.timer=null;} }
 let wakeLock=null;
 async function keepAwake(on){ try{ if(on){ if(!wakeLock) wakeLock=await navigator.wakeLock?.request('screen'); } else { await wakeLock?.release(); wakeLock=null; } }catch(e){} }
 
@@ -368,6 +317,10 @@ async function openBundle(b,code){
   }
   return null;
 }
+/* stream encoder for a bundle (teacher and relays use the same id, hash and block size) */
+function bundleEncoder(bytes,m,jStart){
+  return Q.makeEncoder(bytes,{B:m.B,id:fromHex(m.id),hash:fromHex(m.hash),meta:{t:m.title,c:m.count},prefix:PREFIX,every:EVERY,jStart});
+}
 
 /* ---------- tabs ---------- */
 function showTab(name){
@@ -383,7 +336,7 @@ $('tabTeacher').onclick=()=>showTab('teacher');
 /* =============================== TEACHER =============================== */
 const tSaved=LS.get('qrquiz-teacher',null);
 const T={groups:((tSaved&&tSaved.groups&&tSaved.groups.length)?tSaved.groups:[{name:'Group A'},{name:'Group B'},{name:'Group C'}])
-          .map(g=>({name:g.name||'',code:g.code||genCode(),file:null})), bc:null, bundle:null, built:null};
+          .map(g=>({name:g.name||'',code:g.code||genCode(),file:null})), enc:null, run:null, bundle:null, built:null, n:0};
 $('qTitle').value=(tSaved&&tSaved.title)||'';
 function saveTeacher(){ LS.set('qrquiz-teacher',{title:$('qTitle').value,groups:T.groups.map(g=>({name:g.name,code:g.code}))}); }
 $('qTitle').addEventListener('change',saveTeacher);
@@ -403,7 +356,7 @@ function renderGroups(){
   $('groupRows').querySelectorAll('.gfile').forEach(el=>el.onchange=async()=>{
     const f=el.files[0], i=+el.dataset.i; if(!f) return;
     T.groups[i].file={name:f.name,size:f.size,mime:f.type||'application/octet-stream',bytes:new Uint8Array(await f.arrayBuffer())};
-    $('gFileName'+i).innerHTML=esc(f.name)+' · '+fmtBytes(f.size)+(f.size>200*1024?' <span class="bad">Large: this will take several minutes to send.</span>':'');
+    $('gFileName'+i).innerHTML=esc(f.name)+' · '+fmtBytes(f.size);
   });
 }
 $('btnAddGroup').onclick=()=>{ T.groups.push({name:'Group '+String.fromCharCode(65+T.groups.length%26),code:genCode(),file:null}); saveTeacher(); renderGroups(); };
@@ -424,9 +377,9 @@ $('btnBuild').onclick=async()=>{
   try{
     const bytes=await buildBundle(T.groups.map(g=>({name:g.name,code:g.code,file:g.file})));
     for(const g of T.groups){ const r=await openBundle(bytes,g.code); if(!r||r.group!==g.name) throw new Error('self-check failed'); }
-    const built={title,id:randomId(),B:Math.max(40,+$('blk').value|0),hash:await sha256hex(bytes),count:T.groups.length,
+    const built={title,id:randomId(),B:Q.blockSize(+$('blk').value),hash:await sha256hex(bytes),count:T.groups.length,
                  groups:T.groups.map(g=>({name:g.name,code:g.code})),builtAt:Date.now()};
-    if(installBroadcast(bytes,built)){
+    if(await installBroadcast(bytes,built)){
       const kept=LS.set('qrquiz-teacher-built',{...built,b64:b64enc(bytes)});
       tSay(`Encrypted ${built.count} version${built.count>1?'s':''}. Each code was checked and opens its own version. Press Play.`+(kept?'':' <span class="bad">This browser could not keep a copy, so encrypt again if you reload the page.</span>'));
     }
@@ -434,41 +387,41 @@ $('btnBuild').onclick=async()=>{
   $('btnBuild').disabled=false;
 };
 
-function installBroadcast(bytes,built){
-  stopBroadcast(T.bc);
-  const bc=makeBroadcast(bytes,{id:built.id,B:built.B,title:built.title,hash:built.hash,count:built.count});
+async function installBroadcast(bytes,built){
+  pauseT();
+  const enc=await bundleEncoder(bytes,built);
   let n;
-  try{ n=drawQR($('qr'),dataText(bc,2000000000),$('ecc').value); }                // largest frame must fit one QR
+  try{ n=Q.makeQR(enc.largestText(),$('ecc').value).getModuleCount(); Q.drawQR($('qr'),enc.infoText(),$('ecc').value); }
   catch(e){ tSay('<span class="bad">The block size is too large for one QR code. Lower it in Broadcast settings.</span>'); return false; }
-  drawQR($('qr'),infoText(bc),$('ecc').value);
-  T.bc=bc; T.bundle=bytes; T.built=built; T.n=n;
+  T.enc=enc; T.bundle=bytes; T.built=built; T.n=n;
   $('btnPlay').disabled=false; $('btnFull').disabled=false;
   renderCodes(); updateTStats();
   return true;
 }
 function updateTStats(){
-  const bc=T.bc; if(!bc) return;
-  const fps=Math.min(15,Math.max(1,+$('fps').value||6)), dataFps=fps*(1-1/EVERY), H=+$('scrH').value||1.5;
-  const module=H/(T.n+8), dMax=module*1280/(4*1.3);          // ≥4 camera pixels per module, ~65° phone camera, 1280 px processed
-  $('tStats').innerHTML=stat('Versions',bc.count)+stat('Encrypted size',fmtBytes(bc.size))+stat('Blocks K',bc.K)
-    +stat('QR size',`${T.n}×${T.n}`)+stat('Typical receive time',fmtTime(bc.K*1.3/dataFps))
+  const e=T.enc; if(!e) return;
+  const fps=T.run&&T.run.fps?T.run.fps:Math.min(30,Math.max(1,+$('fps').value||12)), dataFps=fps*(1-1/EVERY), H=+$('scrH').value||1.5;
+  const dMax=H/(T.n+8)*1280/(4*1.3);          // ≥4 camera pixels per module, ~65° phone camera, 1280 px processed
+  $('tStats').innerHTML=stat('Versions',T.built.count)+stat('Encrypted size',fmtBytes(e.size))+stat('Blocks K',e.K)
+    +stat('QR size',`${T.n}×${T.n}`)+stat('Frame rate',fps.toFixed(1)+' fps')+stat('Receive time, no loss',fmtTime(e.K*1.03/dataFps))
     +stat('Readable to about',`${dMax.toFixed(1)} m`)+stat('With 2× zoom',`${(2*dMax).toFixed(1)} m`)
-    +stat('Frames sent',bc.sent);
+    +stat('Frames shown',T.run?T.run.frames:0);
 }
 function playT(){
-  if(!T.bc) return;
-  startBroadcast(T.bc,$('qr'),Math.min(15,Math.max(1,+$('fps').value||6)),$('ecc').value,()=>{ if(T.bc.sent%5===0) updateTStats(); });
+  if(!T.enc) return;
+  pauseT();
+  T.run=Q.broadcast($('qr'),{fps:Math.min(30,Math.max(1,+$('fps').value||12)),ecc:$('ecc').value,next:()=>T.enc.next(),onFrame:s=>{ if(s.frames%12===0) updateTStats(); }});
   $('btnPlay').textContent='Pause'; keepAwake(true);
 }
-function pauseT(){ stopBroadcast(T.bc); $('btnPlay').textContent='Play'; keepAwake(false); }
-$('btnPlay').onclick=()=>T.bc&&T.bc.timer?pauseT():playT();
+function pauseT(){ if(T.run){ T.run.stop(); T.run=null; } $('btnPlay').textContent='Play'; keepAwake(false); }
+$('btnPlay').onclick=()=>T.run?pauseT():playT();
 $('btnFull').onclick=()=>{ try{ const r=$('stage').requestFullscreen?.(); r&&r.catch(()=>{}); }catch(e){} };
-['fps','ecc','scrH'].forEach(id=>$(id).addEventListener('change',()=>{ if(!T.bc) return;
-  if(id==='ecc'){ try{ T.n=drawQR($('qr'),dataText(T.bc,2000000000),$('ecc').value); }catch(e){} }
-  updateTStats(); if(T.bc.timer&&id!=='scrH') playT(); }));
-$('blk').addEventListener('change',()=>{ if(!T.bundle) return;          // new block size = new stream id; same encrypted quiz and codes
-  const built={...T.built,id:randomId(),B:Math.max(40,+$('blk').value|0)}, playing=!!(T.bc&&T.bc.timer);
-  if(installBroadcast(T.bundle,built)){ LS.set('qrquiz-teacher-built',{...built,b64:b64enc(T.bundle)}); if(playing) playT();
+['fps','ecc','scrH'].forEach(id=>$(id).addEventListener('change',()=>{ if(!T.enc) return;
+  if(id==='ecc'){ try{ T.n=Q.makeQR(T.enc.largestText(),$('ecc').value).getModuleCount(); }catch(e){} }
+  const playing=!!T.run; updateTStats(); if(playing&&id!=='scrH') playT(); }));
+$('blk').addEventListener('change',async()=>{ if(!T.bundle) return;   // new block size = new stream id; same encrypted quiz and codes
+  const built={...T.built,id:randomId(),B:Q.blockSize(+$('blk').value)}, playing=!!T.run;
+  if(await installBroadcast(T.bundle,built)){ LS.set('qrquiz-teacher-built',{...built,b64:b64enc(T.bundle)}); if(playing) playT();
     tSay('Block size changed. Students who already started need to receive the new stream.'); } });
 
 function renderCodes(){
@@ -499,115 +452,61 @@ const lastBuilt=LS.get('qrquiz-teacher-built',null);
 if(lastBuilt&&lastBuilt.b64){
   $('restoreBox').hidden=false;
   $('restoreInfo').innerHTML=`<b>${esc(lastBuilt.title)}</b>, ${lastBuilt.count} version${lastBuilt.count>1?'s':''}, encrypted ${new Date(lastBuilt.builtAt).toLocaleString()}. Broadcasting it again keeps the same codes, and students who already started can continue.`;
-  $('btnRestore').onclick=()=>{ try{ const bytes=b64dec(lastBuilt.b64); $('blk').value=lastBuilt.B;
-    if(installBroadcast(bytes,lastBuilt)){ $('restoreBox').hidden=true; tSay('Last quiz restored. Press Play.'); } }
+  $('btnRestore').onclick=async()=>{ try{ const bytes=b64dec(lastBuilt.b64); const built={...lastBuilt,B:Q.blockSize(lastBuilt.B)}; $('blk').value=built.B;
+    if(await installBroadcast(bytes,built)){ $('restoreBox').hidden=true; tSay('Last quiz restored. Press Play.'); } }
     catch(e){ tSay('<span class="bad">The saved quiz could not be read. Encrypt it again.</span>'); } };
 }
 
 /* =============================== STUDENT =============================== */
-let stream=null,track=null,scanning=false,detector=null,rxs=new Map(),relay=null,removeArmed=0;
+let cam=null,scanning=false,rxs=new Map(),relay=null,relayEnc=null,removeArmed=0;
 let stored=LS.get('qrquiz-bundle',null), storedBytes=null;
 if(stored){ try{ storedBytes=b64dec(stored.b64); }catch(e){ stored=null; } }
-const scan=document.createElement('canvas'), sctx=scan.getContext('2d',{willReadFrequently:true});
 
 async function startCam(){
-  try{
-    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});
-  }catch(e){ $('sReceiveHint').innerHTML='<span class="bad">The camera could not start.</span> Allow camera access for this page and try again.'; return; }
-  const v=$('video'); v.hidden=false; v.srcObject=stream; try{ await v.play(); }catch(e){}
-  track=stream.getVideoTracks()[0];
-  try{ await track.applyConstraints({advanced:[{focusMode:'continuous'}]}); }catch(e){}
-  const caps=track.getCapabilities?track.getCapabilities():{};
+  try{ cam=await Q.openCamera(); }
+  catch(e){ $('sReceiveHint').innerHTML='<span class="bad">The camera could not start.</span> Allow camera access for this page and try again.'; return; }
+  const v=$('video'); v.hidden=false; v.srcObject=cam.stream; try{ await v.play(); }catch(e){}
+  const caps=cam.track.getCapabilities?cam.track.getCapabilities():{};
   if(caps.zoom&&caps.zoom.max>caps.zoom.min){
     const z=$('zoom'); z.min=caps.zoom.min; z.max=Math.min(caps.zoom.max,8); z.step=caps.zoom.step||0.1; z.value=caps.zoom.min;
     $('zoomVal').textContent=(+z.value).toFixed(1)+'×'; $('zoomWrap').hidden=false;
   }
-  detector=null;
-  if('BarcodeDetector' in window){ try{ const f=await BarcodeDetector.getSupportedFormats(); if(f.includes('qr_code')) detector=new BarcodeDetector({formats:['qr_code']}); }catch(e){} }
   scanning=true; $('btnCam').disabled=true; $('btnCamStop').disabled=false; $('sProgress').hidden=false; $('rxDot').classList.add('live');
-  updateRx(); requestAnimationFrame(scanLoop);
+  $('rxStatus').textContent='Looking for the quiz…';
+  Q.eachVideoFrame(v,async()=>{ for(const t of await Q.readFrame(v,cam.detector)) onText(t); },()=>scanning);
 }
 function stopCam(){
-  scanning=false; stream?.getTracks().forEach(t=>t.stop()); stream=null; track=null;
+  scanning=false; cam?.stream.getTracks().forEach(t=>t.stop()); cam=null;
   $('video').hidden=true; $('zoomWrap').hidden=true; $('btnCam').disabled=false; $('btnCamStop').disabled=true; $('rxDot').classList.remove('live');
 }
 $('btnCam').onclick=startCam; $('btnCamStop').onclick=stopCam;
-$('zoom').oninput=()=>{ $('zoomVal').textContent=(+$('zoom').value).toFixed(1)+'×'; track?.applyConstraints({advanced:[{zoom:+$('zoom').value}]}).catch(()=>{}); };
-
-async function scanLoop(){
-  if(!scanning) return;
-  const v=$('video');
-  if(v.readyState>=2&&v.videoWidth){
-    try{
-      if(detector){ const r=await detector.detect(v); for(const c of r) onText(c.rawValue); }
-      else{
-        const sc=Math.min(1,1280/Math.max(v.videoWidth,v.videoHeight)), w=Math.round(v.videoWidth*sc), h=Math.round(v.videoHeight*sc);
-        if(scan.width!==w||scan.height!==h){scan.width=w;scan.height=h;}
-        sctx.drawImage(v,0,0,w,h);
-        const c=jsQR(sctx.getImageData(0,0,w,h).data,w,h,{inversionAttempts:'dontInvert'}); if(c) onText(c.data);
-      }
-    }catch(e){}
-  }
-  requestAnimationFrame(scanLoop);
-}
+$('zoom').oninput=()=>{ $('zoomVal').textContent=(+$('zoom').value).toFixed(1)+'×'; cam?.track.applyConstraints({advanced:[{zoom:+$('zoom').value}]}).catch(()=>{}); };
 
 function onText(text){
-  const p=text.split('|'); if(p[0]!==PROTO||p.length<6) return;
-  const id=p[1];
-  if(stored&&stored.id===id){ $('rxStatus').innerHTML='<span class="ok">You already have this quiz.</span>'; return; }
-  let s=rxs.get(id);
-  if(!s){ s={id,K:0,B:0,size:0,cdf:null,blocks:null,waiting:null,recovered:0,seen:new Set(),meta:null,reads:0,done:false,t0:performance.now()}; rxs.set(id,s); }
-  if(s.done) return;
-  s.reads++;
-  if(p[2]==='M'){ if(!s.meta&&p.length>=7) s.meta={title:decodeURIComponent(p[3]),hash:p[4],count:+p[5],B:+p[6]}; }
-  else if(p.length>=7){
-    const j=+p[2];
-    if(!s.blocks){ s.K=+p[3]; s.B=+p[4]; s.size=+p[5]; if(!(s.K>0&&s.K<200000&&s.B>0)) { rxs.delete(id); return; }
-      s.cdf=robustSolitonCdf(s.K); s.blocks=new Array(s.K).fill(null); s.waiting=Array.from({length:s.K},()=>[]); }
-    if(!s.seen.has(j)){ s.seen.add(j); addPacket(s,neighbours(j,s.K,s.cdf),b64dec(p[6])); }
-  }
-  if(s.blocks&&s.recovered===s.K&&s.meta) finishRx(s);
+  const p=Q.parse(text,PREFIX); if(!p) return;
+  if(stored&&stored.id===p.id){ $('rxStatus').innerHTML='<span class="ok">You already have this quiz.</span>'; return; }
+  let s=rxs.get(p.id); if(!s){ if(p.K>200000) return; s=new Q.Decoder(p.id); rxs.set(p.id,s); }
+  if(s.finishing) return;
+  s.add(p);
+  if(s.ready){ s.finishing=true; finishRx(s); }
   updateRx();
 }
-function addPacket(s,nbrs,data){
-  const left=[];
-  for(const i of nbrs){ if(s.blocks[i]) xorInto(data,s.blocks[i]); else left.push(i); }
-  if(!left.length) return;
-  if(left.length===1){ recover(s,left[0],data); return; }
-  const pkt={nbrs:new Set(left),data};
-  for(const i of left) s.waiting[i].push(pkt);
-}
-function recover(s,b0,d0){
-  const q=[[b0,d0]];
-  while(q.length){
-    const [b,d]=q.pop();
-    if(s.blocks[b]) continue;
-    s.blocks[b]=d; s.recovered++;
-    const list=s.waiting[b]; s.waiting[b]=[];
-    for(const p of list){
-      if(!p.nbrs.has(b)) continue;
-      xorInto(p.data,d); p.nbrs.delete(b);
-      if(p.nbrs.size===1){ const [nb]=p.nbrs; p.nbrs.clear(); if(!s.blocks[nb]) q.push([nb,p.data]); }
-    }
-  }
-}
 async function finishRx(s){
-  s.done=true;
-  const buf=new Uint8Array(s.K*s.B); s.blocks.forEach((b,i)=>buf.set(b,i*s.B));
-  const bytes=buf.slice(0,s.size);
-  if(await sha256hex(bytes)!==s.meta.hash){ rxs.delete(s.id); $('rxStatus').innerHTML='<span class="bad">The received data was damaged. Receiving it again…</span>'; return; }
-  stored={id:s.id,title:s.meta.title,hash:s.meta.hash,count:s.meta.count,B:s.B,receivedAt:Date.now()}; storedBytes=bytes;
+  const bytes=await s.bytes();
+  if(!bytes){ rxs.delete(s.id); $('rxStatus').innerHTML='<span class="bad">The received data was damaged. Receiving it again…</span>'; return; }
+  stored={id:s.id,title:s.meta.t||'Quiz',hash:s.hashHex,count:s.meta.c||1,B:s.B,receivedAt:Date.now()}; storedBytes=bytes;
   const kept=LS.set('qrquiz-bundle',{...stored,b64:b64enc(bytes)});
+  const secs=(performance.now()-s.t0)/1000;
   rxs.clear(); stopCam(); navigator.vibrate?.(200);
-  $('rxStatus').innerHTML='<span class="ok">Quiz received.</span>'+(kept?'':' Keep this page open: this browser could not save a copy.');
+  $('rxStatus').innerHTML=`<span class="ok">Quiz received</span> in ${fmtTime(secs)}.`+(kept?'':' Keep this page open: this browser could not save a copy.');
   $('rxBar').style.width='100%';
   renderStudent();
 }
 function updateRx(){
   let best=null; for(const s of rxs.values()) if(s.K&&(!best||s.recovered/s.K>best.recovered/best.K)) best=s;
-  if(!best){ if(scanning&&!(stored&&rxs.size===0&&$('rxStatus').textContent.includes('already'))) $('rxStatus').textContent='Looking for the quiz…'; return; }
+  if(!best) return;
   const pct=100*best.recovered/best.K, t=(performance.now()-best.t0)/1000;
-  $('rxStatus').textContent=`Receiving ${best.meta?best.meta.title:'the quiz'}: ${pct.toFixed(0)} %`;
+  $('rxStatus').textContent=`Receiving ${best.meta?best.meta.t:'the quiz'}: ${pct.toFixed(0)} %`;
   $('rxBar').style.width=pct+'%';
   $('rxStats').innerHTML=stat('Blocks',`${best.recovered} / ${best.K}`)+stat('Packets read',best.seen.size)+stat('Time',fmtTime(t));
 }
@@ -638,16 +537,16 @@ $('codeForm').addEventListener('submit',async e=>{
   $('sOpened').hidden=false; $('sOpened').scrollIntoView({behavior:'smooth',block:'start'});
 });
 
-function startRelay(){
-  relay=makeBroadcast(storedBytes,{id:stored.id,B:stored.B,title:stored.title,hash:stored.hash,count:stored.count,jStart:1000000+Math.floor(Math.random()*1e9)});
-  try{ drawQR($('relayQr'),infoText(relay),'M'); }catch(e){}
+async function startRelay(){
+  relayEnc=await bundleEncoder(storedBytes,stored,1000000+Math.floor(Math.random()*1e9));
+  try{ Q.drawQR($('relayQr'),relayEnc.infoText(),'L'); }catch(e){}
   $('relayStage').hidden=false; $('btnRelayFull').hidden=false; $('relayInfo').hidden=false;
   $('relayInfo').textContent='Sharing. Your classmates open the Student page and point their camera at your screen.';
-  startBroadcast(relay,$('relayQr'),6,'M'); keepAwake(true);
+  relay=Q.broadcast($('relayQr'),{fps:12,ecc:'L',next:()=>relayEnc.next()}); keepAwake(true);
   $('btnRelay').textContent='Stop sharing';
 }
 function stopRelay(){
-  if(!relay) return; stopBroadcast(relay); relay=null;
+  if(!relay) return; relay.stop(); relay=null;
   $('relayStage').hidden=true; $('btnRelayFull').hidden=true; $('relayInfo').hidden=true; $('btnRelay').textContent='Show QR codes for classmates'; keepAwake(false);
 }
 $('btnRelay').onclick=()=>relay?stopRelay():startRelay();
