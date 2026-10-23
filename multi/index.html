@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="../lib/qrlink.js"></script>
 <style>
 :root{
   --bg:#f3f5f7; --surface:#ffffff; --fg:#14181d; --muted:#5d6874; --line:#d9dee4;
@@ -145,9 +146,9 @@ input:disabled{opacity:.5}
       <summary class="note" style="cursor:pointer">Transmission settings</summary>
       <div class="fields" style="margin-top:10px">
         <label for="blk">Block size (bytes)<input type="number" id="blk" value="300" min="50" max="1500"></label>
-        <label for="fps">Frames per second<input type="number" id="fps" value="5" min="1" max="20"></label>
-        <label for="ecc">QR error correction<select id="ecc"><option>L</option><option selected>M</option><option>Q</option><option>H</option></select></label>
-        <label for="every">File-info frame every<input type="number" id="every" value="10" min="2" max="100"></label>
+        <label for="fps">Frames per second<input type="number" id="fps" value="10" min="1" max="30"></label>
+        <label for="ecc">QR error correction<select id="ecc"><option selected>L</option><option>M</option><option>Q</option><option>H</option></select></label>
+        <label for="every">File-info frame every<input type="number" id="every" value="30" min="2" max="100"></label>
       </div>
     </details>
     <span class="step">3 · Broadcast</span>
@@ -230,49 +231,66 @@ input:disabled{opacity:.5}
 
 <script>
 /* =====================================================================
-   PROTOCOL F3
-   Data : F3|<id>|<j>|<K>|<B>|<size>|<tag>|<base64 payload>
-   Info : F3|<id>|M|<uri name>|<mime>|<sha256>|<tag>
-   tag  : m=<S|D|N>,c=<colors>,t=<tiles>,s=<slot>[,a=<base amplitude>],e=<QR ECC>,f=<sender fps>,k=<sender frame no., base 36>
-          slot = R0,G1,L2 … (channel + tile index) or base / enh (b / e in the short layered tags)
-          k lets the receiver count exactly which sender frames it missed (frame loss per channel)
-   Each file is its own LT fountain stream (systematic first K packets,
-   then Robust-Soliton LT packets seeded by j).
+   PROTOCOL M5 (uses lib/qrlink.js: base45 alphanumeric QR, LT fountain code, peeling + Gaussian elimination)
+   QR text: "M5" + base45(packet)
+   Header (16 bytes): type | stream id(3) | mode (1=S,2=D,3=N) | colors | tiles | channel (1=R,2=G,3=B,4=B/W,5=base,6=enh)
+                      | tile index | base amplitude | QR ECC (1=L..4=H) | sender fps | sender frame k (u32)
+   Data packet: header | j(u32) | K(u24) | B(u16) | size(u32) | payload(B)
+   Info packet: header | K(u24) | B(u16) | size(u32) | sha256(32) | UTF-8 JSON {n: name, m: mime}
+   k lets the receiver count exactly which sender frames it missed (frame loss per stream).
+   Each file is its own fountain stream; streams start with mixed (LT) packets.
    ===================================================================== */
 const $=id=>document.getElementById(id);
-const PROTO='F3', TILE=720, MARGIN=Math.round(TILE*0.09);
+const PREFIX='M5', Q=QRLink, TILE=720, MARGIN=Math.round(TILE*0.09);
+const CH_CODE={R:1,G:2,B:3,L:4,b:5,e:6}, CH_NAME=['','R','G','B','L','b','e'];
+const MODE_CODE={S:1,D:2,N:3}, MODE_NAME=['','S','D','N'], ECC_CODE={L:1,M:2,Q:3,H:4}, ECC_NAME=['','L','M','Q','H'];
 
 /* ---------- helpers ---------- */
-function b64enc(u8){let s='';for(let i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);return btoa(s);}
-function b64dec(str){const s=atob(str),u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
 async function sha256hex(buf){const h=await crypto.subtle.digest('SHA-256',buf);return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,'0')).join('');}
+const fromHex=h=>new Uint8Array(h.match(/../g).map(x=>parseInt(x,16)));
 function fmtBytes(n){return n<1024?n.toFixed(0)+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(2)+' MB';}
 function stat(l,v){return `<div>${l}<b>${v}</b></div>`;}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function xorInto(a,b){for(let i=0;i<a.length;i++)a[i]^=b[i];}
 
-/* ---------- LT fountain code ---------- */
-function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
-function robustSolitonCdf(K){
-  if(K===1) return new Float64Array([1]);
-  const c=0.1,delta=0.5,R=c*Math.log(K/delta)*Math.sqrt(K);
-  const mu=new Float64Array(K+1);
-  mu[1]=1/K; for(let d=2;d<=K;d++) mu[d]=1/(d*(d-1));
-  let s=Math.floor(K/R); if(s<1)s=1; if(s>K)s=K;
-  for(let d=1;d<s;d++) mu[d]+=R/(d*K);
-  const spike=R*Math.log(R/delta)/K; if(spike>0) mu[s]+=spike;
-  let Z=0; for(let d=1;d<=K;d++) Z+=mu[d];
-  const cdf=new Float64Array(K); let acc=0;
-  for(let d=1;d<=K;d++){acc+=mu[d]/Z; cdf[d-1]=acc;}
-  cdf[K-1]=1; return cdf;
+/* ---------- packets ---------- */
+function writeHead(p,type,enc,tg,k){
+  p[0]=type; p.set(enc.id,1); p[4]=MODE_CODE[tg.m]; p[5]=tg.c; p[6]=tg.t; p[7]=CH_CODE[tg.ch]; p[8]=tg.idx;
+  p[9]=tg.a||0; p[10]=ECC_CODE[tg.e]||1; p[11]=Math.min(255,tg.f|0); new DataView(p.buffer).setUint32(12,k>>>0);
 }
-function sampleDegree(cdf,u){let lo=0,hi=cdf.length-1;while(lo<hi){const m=(lo+hi)>>1;if(cdf[m]<u)lo=m+1;else hi=m;}return lo+1;}
-function neighbours(j,K,cdf){
-  if(j<K) return [j];
-  const rng=mulberry32((Math.imul(j,0x9E3779B1)^0x85EBCA6B)>>>0);
-  const d=sampleDegree(cdf,rng());
-  const set=new Set(); while(set.size<d) set.add(Math.floor(rng()*K));
-  return [...set];
+function putKBS(p,o,enc){ p[o]=(enc.K>>16)&255; p[o+1]=(enc.K>>8)&255; p[o+2]=enc.K&255; const v=new DataView(p.buffer); v.setUint16(o+3,enc.B); v.setUint32(o+5,enc.file.size); }
+function encText(enc,tg,isInfo,k,jOverride){
+  if(isInfo){
+    const meta=new TextEncoder().encode(JSON.stringify({n:enc.file.name,m:enc.file.mime})), p=new Uint8Array(57+meta.length);
+    writeHead(p,2,enc,tg,k); putKBS(p,16,enc); p.set(enc.hash,25); p.set(meta,57);
+    return PREFIX+Q.b45enc(p);
+  }
+  const j=jOverride!=null?jOverride:enc.j++, p=new Uint8Array(29+enc.B);
+  writeHead(p,1,enc,tg,k); new DataView(p.buffer).setUint32(16,j>>>0); putKBS(p,20,enc);
+  const out=p.subarray(29); for(const i of Q.neighbours(j,enc.K)) xorInto(out,enc.blocks[i]);
+  return PREFIX+Q.b45enc(p);
+}
+function parsePacket(text){
+  if(typeof text!=='string'||!text.startsWith(PREFIX)) return null;
+  const p=Q.b45dec(text.slice(PREFIX.length)); if(!p||p.length<25) return null;
+  const v=new DataView(p.buffer), type=p[0];
+  const tag={m:MODE_NAME[p[4]],c:p[5],t:p[6],ch:CH_NAME[p[7]],idx:p[8],a:p[9],e:ECC_NAME[p[10]],f:p[11],k:v.getUint32(12)};
+  if(!tag.m||!tag.ch||!tag.e) return null;
+  tag.s=(tag.ch==='b'||tag.ch==='e')?tag.ch:tag.ch+tag.idx;
+  const id=Q.hex(p.subarray(1,4));
+  if(type===1&&p.length>=29){
+    const K=(p[20]<<16)|(p[21]<<8)|p[22], B=v.getUint16(23), size=v.getUint32(25);
+    if(!K||!B||p.length!==29+B||size>K*B||size<=(K-1)*B) return null;
+    return {tag,pkt:{type:'data',id,j:v.getUint32(16),K,B,size,payload:p.slice(29)}};
+  }
+  if(type===2&&p.length>=57){
+    const K=(p[16]<<16)|(p[17]<<8)|p[18], B=v.getUint16(19), size=v.getUint32(21);
+    let meta; try{ meta=JSON.parse(new TextDecoder().decode(p.subarray(57))); }catch(e){ return null; }
+    if(!K||!B||size>K*B) return null;
+    const hashHex=Q.hex(p.subarray(25,57));
+    return {tag,pkt:{type:'info',id,K,B,size,hashHex,meta:{name:meta.n,mime:meta.m,hash:hashHex}}};
+  }
+  return null;
 }
 
 /* ---------- tabs ---------- */
@@ -327,56 +345,50 @@ function checkReady(){
 
 const usedIds=new Set();
 function makeEnc(file,B){
-  B=Math.max(20,B|0);
+  B=Math.max(8,Math.min(2000,B|0)); B+=(4-(B&3))&3;
   const K=Math.max(1,Math.ceil(file.size/B)), padded=new Uint8Array(K*B); padded.set(file.bytes);
   const blocks=[]; for(let i=0;i<K;i++) blocks.push(padded.subarray(i*B,(i+1)*B));
-  let id; do{id=Math.random().toString(16).slice(2,6);}while(usedIds.has(id)); usedIds.add(id);
-  return {id,K,B,blocks,cdf:robustSolitonCdf(K),j:0,count:0,file};
-}
-function encText(enc,tag,isInfo,shortTag){
-  if(isInfo)
-    return [PROTO,enc.id,'M',encodeURIComponent(enc.file.name),enc.file.mime,enc.file.hash,tag].join('|');
-  const j=enc.j++, out=new Uint8Array(enc.B);
-  for(const i of neighbours(j,enc.K,enc.cdf)) xorInto(out,enc.blocks[i]);
-  return [PROTO,enc.id,j,enc.K,enc.B,enc.file.size,shortTag||tag,b64enc(out)].join('|');
+  let id; do{ id=crypto.getRandomValues(new Uint8Array(3)); }while(usedIds.has(Q.hex(id))); usedIds.add(Q.hex(id));
+  return {id,K,B,blocks,j:K,file,hash:fromHex(file.hash)};       // start with mixed packets (j = K)
 }
 
 function buildPlan(){
   const m=mode(), B=+$('blk').value;
   const p={mode:m,colors:1,tiles:1,ac:0,streams:[]};
-  const tagOf=(slot)=>`m=${p.mode},c=${p.colors},t=${p.tiles},s=${slot}`+(p.mode==='N'?`,a=${p.ac}`:'')+`,e=${$('ecc').value},f=${+$('fps').value}`;
+  const tgOf=(ch,idx)=>({m:p.mode,c:p.colors,t:p.tiles,ch,idx,a:p.ac});
   if(m==='S'){
     p.colors=+$('sColors').value; p.tiles=+$('sTiles').value;
     const enc=makeEnc(files.S,B), chans=p.colors===3?['R','G','B']:['L'], slots=[];
     for(let t=0;t<p.tiles;t++) for(const ch of chans) slots.push({tile:t,ch,info:true});   // info frames rotate over all slots
-    slots.forEach(s=>s.tag=tagOf(s.ch+s.tile));
+    slots.forEach(s=>s.tg=tgOf(s.ch,s.tile));
     p.streams.push({enc,slots});
   }else if(m==='D'){
     const div=$('dDiv').value;
     if(div==='color'){
       p.colors=3; p.tiles=1;
-      ['R','G','B'].forEach((ch,i)=>{ if(files.D[i]) p.streams.push({enc:makeEnc(files.D[i],B),slots:[{tile:0,ch,info:true,tag:tagOf(ch+'0')}]}); });
+      ['R','G','B'].forEach((ch,i)=>{ if(files.D[i]) p.streams.push({enc:makeEnc(files.D[i],B),slots:[{tile:0,ch,info:true,tg:tgOf(ch,0)}]}); });
     }else{
       p.colors=1; p.tiles=div==='space2'?2:4;
-      for(let i=0;i<p.tiles;i++) if(files.D[i]) p.streams.push({enc:makeEnc(files.D[i],B),slots:[{tile:i,ch:'L',info:true,tag:tagOf('L'+i)}]});
+      for(let i=0;i<p.tiles;i++) if(files.D[i]) p.streams.push({enc:makeEnc(files.D[i],B),slots:[{tile:i,ch:'L',info:true,tg:tgOf('L',i)}]});
     }
   }else{
     p.ac=+$('nAc').value;
-    p.streams.push({enc:makeEnc(files.N.base,+$('nBc').value),slots:[{layer:'c',info:true,tag:tagOf('base'),short:`m=N,s=b,a=${p.ac}`}]});
-    p.streams.push({enc:makeEnc(files.N.enh,+$('nBf').value),slots:[{layer:'f',info:true,tag:tagOf('enh'),short:`m=N,s=e,a=${p.ac}`}]});
+    p.streams.push({enc:makeEnc(files.N.base,+$('nBc').value),slots:[{layer:'c',info:true,tg:tgOf('b',0)}]});
+    p.streams.push({enc:makeEnc(files.N.enh,+$('nBf').value),slots:[{layer:'f',info:true,tg:tgOf('e',0)}]});
   }
   return p;
 }
 
 function matrix(text){
-  const q=qrcode(0,$('ecc').value); q.addData(text); q.make();
+  const q=qrcode(0,$('ecc').value); q.addData(text,'Alphanumeric'); q.make();
   const n=q.getModuleCount(), d=new Uint8Array(n*n);
   for(let r=0;r<n;r++) for(let c=0;c<n;c++) d[r*n+c]=q.isDark(r,c)?1:0;
   return {n,d};
 }
 function idxMap(n,s){const a=new Uint16Array(s);for(let i=0;i<s;i++)a[i]=Math.floor(i*n/s);return a;}
 
-function compose(items,p){
+function compose(items,p){ $('qr').getContext('2d').putImageData(composeImage(items,p),0,0); }
+function composeImage(items,p){
   const cols=p.tiles===1?1:2, rows=p.tiles===4?2:1, W=cols*TILE, H=rows*TILE, c=$('qr');
   if(c.width!==W||c.height!==H){c.width=W;c.height=H;c.style.aspectRatio=W+' / '+H;}
   const ctx=c.getContext('2d'), img=ctx.createImageData(W,H), px=img.data; px.fill(255);
@@ -401,15 +413,15 @@ function compose(items,p){
       }
     }
   }
-  ctx.putImageData(img,0,0);
+  return img;
 }
 function frameItems(p){
-  const items=[], k=',k='+frameNo.toString(36), every=Math.max(2,+$('every').value|0);   // k = sender frame counter in every QR
+  const items=[], k=frameNo, every=Math.max(2,+$('every').value|0), e=$('ecc').value, f=+$('fps').value;   // k = sender frame counter in every QR
   let idx=0;
   for(const st of p.streams) for(const sl of st.slots){
     const isInfo=sl.info&&((frameNo+idx)%every===0);   // each slot carries a file-info frame every `every` frames, staggered,
     idx++;                                             // so a receiver that keeps only one slot still learns the file name
-    items.push({...sl,mat:matrix(encText(st.enc,sl.tag+k,isInfo,sl.short?sl.short+k:undefined))});
+    items.push({...sl,mat:matrix(encText(st.enc,{...sl.tg,e,f},isInfo,k))});
   }
   return items;
 }
@@ -417,7 +429,7 @@ function frameItems(p){
 $('btnConvert').onclick=()=>{
   pause();
   try{ plan=buildPlan();
-       for(const st of plan.streams) matrix(encText(st.enc,st.slots[0].tag+',k=zzzzz',false,st.slots[0].short?st.slots[0].short+',k=zzzzz':undefined)); // largest data frame must fit
+       for(const st of plan.streams) matrix(encText(st.enc,{...st.slots[0].tg,e:$('ecc').value,f:+$('fps').value},false,4e9,4e9)); // largest data frame must fit
        compose(frameItems(plan),plan); }
   catch(e){ plan=null; $('sendInfo').innerHTML='<span class="bad">A block is too big for one QR code at this error-correction level. Lower the block size.</span>'; return; }
   frameNo=0; $('btnPlay').disabled=false; $('btnFull').disabled=false;
@@ -428,23 +440,40 @@ $('btnConvert').onclick=()=>{
   $('sendInfo').innerHTML=desc+'. Press Play and keep it running.';
   updateSendStats();
 };
-function tick(){ try{compose(frameItems(plan),plan);}catch(e){} frameNo++; updateSendStats(); }
+/* Frames change on screen refreshes and are held for a whole number of refreshes (measured from the
+   real refresh rate); the next frame is prepared right after drawing, so drawing happens on time. */
+function buildFrame(){ try{ return composeImage(frameItems(plan),plan); }catch(e){ return null; } }
 async function play(){
   if(!plan) return;
-  timer=setInterval(tick,1000/Math.min(20,Math.max(1,+$('fps').value)));
+  pause();
+  const fps=Math.min(30,Math.max(1,+$('fps').value)), st={running:true,fps:0}, dts=[];
+  let last=0,count=0,hold=0,nextImg=buildFrame();
+  timer=st;
+  const loop=t=>{
+    if(!st.running) return;
+    if(last&&dts.length<40) dts.push(t-last); last=t;
+    if(!hold&&dts.length>=12){ const so=dts.slice().sort((a,b)=>a-b),med=so[so.length>>1]; hold=Math.max(1,Math.round(1000/fps/med)); st.fps=1000/med/hold; }
+    if(count%(hold||Math.max(1,Math.round(60/fps)))===0){
+      if(nextImg) $('qr').getContext('2d').putImageData(nextImg,0,0);
+      frameNo++; if(frameNo%6===0) updateSendStats();
+      nextImg=buildFrame();
+    }
+    count++; requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
   $('btnPlay').textContent='Pause';
   try{wakeLock=await navigator.wakeLock?.request('screen');}catch(e){}
 }
-function pause(){if(timer){clearInterval(timer);timer=null;}$('btnPlay').textContent='Play';try{wakeLock?.release();}catch(e){}wakeLock=null;}
+function pause(){if(timer){timer.running=false;timer=null;}$('btnPlay').textContent='Play';try{wakeLock?.release();}catch(e){}wakeLock=null;}
 $('btnPlay').onclick=()=>timer?pause():play();
 $('btnFull').onclick=()=>{try{const r=$('qr').requestFullscreen?.();r&&r.catch(()=>{});}catch(e){}};
 
 function updateSendStats(){
   if(!plan) return;
-  const fps=+$('fps').value, every=+$('every').value;
+  const fps=timer&&timer.fps?timer.fps:+$('fps').value, every=+$('every').value;
   let rate=0,qrs=0; for(const st of plan.streams){ qrs+=st.slots.length; rate+=st.enc.B*st.slots.length*fps*(st.slots.some(s=>s.info)?(1-1/(every*st.slots.length)):1); }
   $('sendStats').innerHTML=stat('QR per frame',qrs)+stat('Files',plan.streams.length)
-    +stat('Blocks K',plan.streams.map(s=>s.enc.K).join(' / '))+stat('Raw data rate',fmtBytes(rate)+'/s')+stat('Frames sent',frameNo);
+    +stat('Blocks K',plan.streams.map(s=>s.enc.K).join(' / '))+stat('Raw data rate',fmtBytes(rate)+'/s')+stat('Frame rate',fps.toFixed(1)+' fps')+stat('Frames sent',frameNo);
 }
 
 /* =========================== RECEIVER =========================== */
@@ -454,15 +483,14 @@ const work=document.createElement('canvas'), wctx=work.getContext('2d',{willRead
 const bufs=[];
 
 async function startCam(){
-  try{
-    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});
-  }catch(e){$('detected').innerHTML='<span class="bad">The camera could not start: '+esc(e.message)+'.</span> Allow camera access for this site and try again.';return;}
+  let cam;
+  try{ cam=await Q.openCamera(); }
+  catch(e){$('detected').innerHTML='<span class="bad">The camera could not start: '+esc(e.message)+'.</span> Allow camera access for this site and try again.';return;}
+  stream=cam.stream; detector=cam.detector;
   const v=$('video'); v.srcObject=stream; await v.play();
-  detector=null;
-  if('BarcodeDetector' in window){try{const f=await BarcodeDetector.getSupportedFormats();if(f.includes('qr_code'))detector=new BarcodeDetector({formats:['qr_code']});}catch(e){}}
   scanning=true; rxT0=performance.now(); procFrames=0;
   $('btnCam').disabled=true; $('btnCamStop').disabled=false;
-  requestAnimationFrame(scanLoop);
+  Q.eachVideoFrame(v,scanFrame,()=>scanning);          // once per new camera frame
 }
 function stopCam(){scanning=false;stream?.getTracks().forEach(t=>t.stop());stream=null;$('btnCam').disabled=false;$('btnCamStop').disabled=true;}
 $('btnCam').onclick=startCam; $('btnCamStop').onclick=stopCam;
@@ -529,8 +557,7 @@ async function decodeAll(img,w,h,max,onCode){
   return out;
 }
 
-async function scanLoop(){
-  if(!scanning) return;
+async function scanFrame(){
   const v=$('video');
   if(v.readyState>=2&&v.videoWidth){
     const maxSide=(learned&&learned.mode==='N')?Math.max(1280,+$('res').value):+$('res').value, sc=Math.min(1,maxSide/Math.max(v.videoWidth,v.videoHeight));
@@ -541,7 +568,6 @@ async function scanLoop(){
     await processFrame(frame,w,h);
     renderSessions();
   }
-  requestAnimationFrame(scanLoop);
 }
 
 /* copy a rectangle of a binary image into its own ImageData */
@@ -671,7 +697,6 @@ async function decodeLayered(frame,w,h){
   else if(++nomaFails>=2){ nomaFails=0; sicIdx=(sicIdx+1)%SIC_VARIANTS.length; }
 }
 
-function parseTag(t){const o={};for(const kv of (t||'').split(',')){const [k,v]=kv.split('=');if(k)o[k]=v;}return o;}
 function slotLabel(tag){
   if(tag.m==='S') return 'Same file · all channels';
   if(tag.m==='N') return (tag.s==='base'||tag.s==='b')?'Base layer':'Enhancement layer';
@@ -731,60 +756,28 @@ function applyPick(){                                     // stop and drop files
   for(const [id,s] of [...sessions]) if(s.slot&&!slotAllowed(s.slot)){ if(s.el) s.el.remove(); sessions.delete(id); }
 }
 
-/* parse one QR text, feed its file's decoder, and return what was read (for the experiment log) */
+/* parse one QR text, feed its file's decoder (peeling + Gaussian elimination), return what was read (for the log) */
 function handleText(text){
-  const p=text.split('|'); if(p[0]!==PROTO||p.length<7) return null;
-  const tag=parseTag(p[6]); if(!tag.m) return null;
+  const r=parsePacket(text); if(!r) return null;
+  const {tag,pkt}=r;
   learn(tag);
-  const id=p[1], isInfo=p[2]==='M';
-  const slot=tag.s==='base'?'b':tag.s==='enh'?'e':(tag.s||'');      // one name per layer in the log
+  const slot=tag.s;
   if(!slotAllowed(slot)) return null;                  // a stream this receiver chose not to keep
-  const info={id,slot,j:isInfo?-1:+p[2],k:tag.k?parseInt(tag.k,36):'',isInfo,isNew:false};
-  let s=sessions.get(id);
-  if(!s){ s={id,slot,label:slotLabel(tag),K:0,B:0,size:0,cdf:null,blocks:null,waiting:null,recovered:0,seen:new Set(),meta:null,reads:0,dups:0,
-             t0:performance.now(),tFirst:run?performance.now()-run.t0:0,done:false,dirty:true,el:null};
-          sessions.set(id,s); }
-  s.reads++;
-  if(s.done) return info;
+  const info={id:pkt.id,slot,j:pkt.type==='info'?-1:pkt.j,k:tag.k,isInfo:pkt.type==='info',isNew:false};
+  let s=sessions.get(pkt.id);
+  if(!s){ s=new Q.Decoder(pkt.id); Object.assign(s,{slot,label:slotLabel(tag),dups:0,tFirst:run?performance.now()-run.t0:0,done:false,dirty:true,el:null});
+          sessions.set(pkt.id,s); }
+  if(s.done){ s.reads++; return info; }
   s.dirty=true;
-  if(isInfo){ if(!s.meta) s.meta={name:decodeURIComponent(p[3]),mime:p[4],hash:p[5]}; }
-  else if(p.length>=8){
-    const j=+p[2];
-    if(!s.blocks){ s.K=+p[3]; s.B=+p[4]; s.size=+p[5]; s.cdf=robustSolitonCdf(s.K); s.blocks=new Array(s.K).fill(null); s.waiting=Array.from({length:s.K},()=>[]); }
-    if(s.seen.has(j)) s.dups++; else { s.seen.add(j); info.isNew=true; addPacket(s,neighbours(j,s.K,s.cdf),b64dec(p[7])); }
-  }
-  if(s.blocks&&s.recovered===s.K&&s.meta) finish(s);
+  const isNew=s.add(pkt);
+  if(pkt.type==='data'){ if(isNew) info.isNew=true; else s.dups++; }
+  if(s.ready&&!s.done) finish(s);
   return info;
-}
-
-/* ---------- peeling decoder (per session) ---------- */
-function addPacket(s,nbrs,data){
-  const left=[];
-  for(const i of nbrs){ if(s.blocks[i]) xorInto(data,s.blocks[i]); else left.push(i); }
-  if(!left.length) return;
-  if(left.length===1){ recover(s,left[0],data); return; }
-  const pkt={nbrs:new Set(left),data};
-  for(const i of left) s.waiting[i].push(pkt);
-}
-function recover(s,b0,d0){
-  const q=[[b0,d0]];
-  while(q.length){
-    const [b,d]=q.pop();
-    if(s.blocks[b]) continue;
-    s.blocks[b]=d; s.recovered++;
-    const list=s.waiting[b]; s.waiting[b]=[];
-    for(const p of list){
-      if(!p.nbrs.has(b)) continue;
-      xorInto(p.data,d); p.nbrs.delete(b);
-      if(p.nbrs.size===1){ const [nb]=p.nbrs; p.nbrs.clear(); if(!s.blocks[nb]) q.push([nb,p.data]); }
-    }
-  }
 }
 
 async function finish(s){
   s.done=true; s.dirty=true; s.t1=performance.now(); s.uniqueAtDone=s.seen.size; s.tDone=run?s.t1-run.t0:0;
-  const buf=new Uint8Array(s.K*s.B); s.blocks.forEach((b,i)=>buf.set(b,i*s.B));
-  const data=buf.slice(0,s.size); s.ok=(await sha256hex(data))===s.meta.hash;
+  const data=await s.bytes(); s.ok=!!data;                  // null when the SHA-256 check fails
   if(s.ok){ s.url=URL.createObjectURL(new Blob([data],{type:s.meta.mime})); navigator.vibrate?.(150); }
   s.dirty=true; renderSessions();
 }
@@ -867,7 +860,7 @@ function onDecoded(text,corners,img,w,h,nDec){
    (same library, same error-correction level -> same version and mask), sample the binary image the
    decoder used at every module centre, and count disagreements. Measured only on codes that were found. */
 function moduleErrors(text,c,img,w,h,ecc,nDec){
-  let q; try{ q=qrcode(0,ecc); q.addData(text); q.make(); }catch(e){ return null; }
+  let q; try{ q=qrcode(0,ecc); q.addData(text,'Alphanumeric'); q.make(); }catch(e){ return null; }
   const n=q.getModuleCount(); if(nDec&&nDec!==n) return null;
   const d=img.data; let err=0;
   for(let r=0;r<n;r++){ const v=(r+.5)/n;
