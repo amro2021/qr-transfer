@@ -73,6 +73,8 @@ th{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--mute
 tbody tr:last-child td{border-bottom:0}
 td.code{font-family:var(--mono);font-size:16px;letter-spacing:.08em}
 td button{padding:6px 12px;font-size:13px}
+label.check{color:var(--fg);font-size:13px}
+label.check input{width:18px;height:18px}
 .codeentry{display:flex;gap:8px;flex-wrap:wrap}
 .codeentry input{flex:1 1 200px;font-family:var(--mono);font-size:22px;letter-spacing:.12em;text-transform:uppercase;text-align:center;padding:12px}
 .codeentry button{flex:0 0 auto}
@@ -162,6 +164,36 @@ td button{padding:6px 12px;font-size:13px}
     </div>
     <div class="stage" id="relayStage" hidden><canvas id="relayQr" width="760" height="760" aria-label="QR stream for classmates"></canvas></div>
     <p class="note" id="relayInfo" hidden></p>
+  </div>
+
+  <div class="panel" id="sResearch">
+    <details id="resBox">
+      <summary class="note" style="cursor:pointer"><b>Reception data for research</b> (optional)</summary>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:10px">
+        <p class="note">Each time you receive a quiz, this phone records how the reception went: time, frames read, and whether packets came from the screen or from a neighbour's phone. Nothing from the quiz itself is recorded.</p>
+        <div class="fields">
+          <label for="resDist">Your distance to the screen (m)<input id="resDist" type="number" step="0.5" min="0" inputmode="decimal" placeholder="e.g. 4"></label>
+          <label for="ghDevice">This phone's name or student ID<input id="ghDevice" placeholder="e.g. 2201234" autocapitalize="off" spellcheck="false"></label>
+        </div>
+        <label for="resNotes">Notes<input id="resNotes" placeholder="Row, lighting, phone model…"></label>
+        <p class="note" id="resStatus">No receptions recorded yet.</p>
+        <div class="actions">
+          <button class="primary" id="btnGh" disabled>Save to GitHub</button>
+          <button id="btnExport" disabled>Download data (.zip)</button>
+          <button id="btnClearRuns" disabled>Clear recorded data</button>
+        </div>
+        <details id="ghBox">
+          <summary class="note" style="cursor:pointer">GitHub settings</summary>
+          <div class="fields" style="margin-top:10px">
+            <label for="ghRepo">Repository<input id="ghRepo" value="amro2021/qr-lab-data" autocapitalize="off" spellcheck="false"></label>
+            <label for="ghFolder">Folder<input id="ghFolder" value="data" autocapitalize="off" spellcheck="false"></label>
+            <label for="ghToken">Access token<input id="ghToken" type="password" autocomplete="off" placeholder="github_pat_…" spellcheck="false"></label>
+          </div>
+          <label class="check" for="ghRemember" style="margin-top:8px;flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="ghRemember" checked> Remember the token on this phone</label>
+          <p class="note" style="margin-top:8px">Use the token your teacher gives you. It stays on this phone and is sent only to GitHub.</p>
+        </details>
+      </div>
+    </details>
   </div>
 
   <div class="actions" id="sRemoveWrap" hidden>
@@ -255,6 +287,7 @@ td button{padding:6px 12px;font-size:13px}
    teacher's, so a receiver combines packets from the projector and from neighbours' phones.
    ===================================================================== */
 const $=id=>document.getElementById(id);
+const RELAY_J=1000000;   // relays number their packets from here, so the log can tell screen and neighbour apart
 const PREFIX='QZ3', ITER=150000, CODE_ALPH='23456789ABCDEFGHJKLMNPQRSTUVWXYZ', EVERY=30, Q=QRLink;
 const LS={get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}},
           set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true;}catch(e){return false;}},
@@ -458,7 +491,7 @@ if(lastBuilt&&lastBuilt.b64){
 }
 
 /* =============================== STUDENT =============================== */
-let cam=null,scanning=false,rxs=new Map(),relay=null,relayEnc=null,removeArmed=0;
+let cam=null,scanning=false,rxs=new Map(),relay=null,relayEnc=null,removeArmed=0,rec=null;
 let stored=LS.get('qrquiz-bundle',null), storedBytes=null;
 if(stored){ try{ storedBytes=b64dec(stored.b64); }catch(e){ stored=null; } }
 
@@ -473,23 +506,43 @@ async function startCam(){
   }
   scanning=true; $('btnCam').disabled=true; $('btnCamStop').disabled=false; $('sProgress').hidden=false; $('rxDot').classList.add('live');
   $('rxStatus').textContent='Looking for the quiz…';
-  Q.eachVideoFrame(v,async()=>{ for(const t of await Q.readFrame(v,cam.detector)) onText(t); },()=>scanning);
+  let res='',fr='';
+  try{ const st=cam.track.getSettings(); if(st.width) res=`${st.width}x${st.height}`; if(st.frameRate) fr=+st.frameRate.toFixed(2); }catch(e){}
+  startRec(cam.detector?'BarcodeDetector':'jsQR',res,fr);
+  Q.eachVideoFrame(v,async()=>{ const t0=performance.now(); logFrame(await Q.readFrame(v,cam.detector),t0); },()=>scanning);
+}
+function startRec(decoder,video_res,camera_fps){ rec={t0:performance.now(),frameIdx:0,frames:[],qrs:[],meta:{start_iso:new Date().toISOString(),video_res,camera_fps,decoder}}; }
+/* feed one camera frame's QR texts to the decoder and log the frame (rec = current reception) */
+function logFrame(texts,t0){
+  const F={qr:0,nw:0,dup:0,info:0};
+  for(const t of texts){
+    const r=onText(t); if(!r||!rec) continue;
+    F.qr++; if(r.isInfo) F.info++; else if(r.isNew) F.nw++; else F.dup++;
+    rec.qrs.push([Math.round(performance.now()-rec.t0),rec.frameIdx,r.slot,r.id,r.j,r.slot==='P'&&!r.isInfo?r.j:'','','',r.isNew?1:0]);
+  }
+  if(rec){ let blocks=0; for(const s of rxs.values()) blocks=Math.max(blocks,s.recovered);
+    rec.frames.push([rec.frameIdx,Math.round(t0-rec.t0),Math.round(performance.now()-t0),F.qr,F.nw,F.dup,F.info,blocks,'','','']); rec.frameIdx++; }
 }
 function stopCam(){
+  if(rec){ let best=null; for(const x of rxs.values()) if(x.K&&(!best||x.recovered/x.K>best.recovered/best.K)) best=x; endRec(best); }
   scanning=false; cam?.stream.getTracks().forEach(t=>t.stop()); cam=null;
   $('video').hidden=true; $('zoomWrap').hidden=true; $('btnCam').disabled=false; $('btnCamStop').disabled=true; $('rxDot').classList.remove('live');
 }
 $('btnCam').onclick=startCam; $('btnCamStop').onclick=stopCam;
 $('zoom').oninput=()=>{ $('zoomVal').textContent=(+$('zoom').value).toFixed(1)+'×'; cam?.track.applyConstraints({advanced:[{zoom:+$('zoom').value}]}).catch(()=>{}); };
 
+/* returns what was read, for the reception log: slot P = projector stream, R = a neighbour's relay */
 function onText(text){
-  const p=Q.parse(text,PREFIX); if(!p) return;
-  if(stored&&stored.id===p.id){ $('rxStatus').innerHTML='<span class="ok">You already have this quiz.</span>'; return; }
-  let s=rxs.get(p.id); if(!s){ if(p.K>200000) return; s=new Q.Decoder(p.id); rxs.set(p.id,s); }
-  if(s.finishing) return;
-  s.add(p);
+  const p=Q.parse(text,PREFIX); if(!p) return null;
+  if(stored&&stored.id===p.id){ $('rxStatus').innerHTML='<span class="ok">You already have this quiz.</span>'; return null; }
+  let s=rxs.get(p.id); if(!s){ if(p.K>200000) return null; s=new Q.Decoder(p.id); s.tFirst=rec?performance.now()-rec.t0:0; s.dups=0; s.fromRelay=0; rxs.set(p.id,s); }
+  const info={id:p.id,isInfo:p.type==='info',j:p.type==='info'?-1:p.j,slot:p.type==='data'&&p.j>=RELAY_J?'R':'P',isNew:false};
+  if(s.finishing) return info;
+  const isNew=s.add(p);
+  if(p.type==='data'){ if(isNew){ info.isNew=true; if(info.slot==='R') s.fromRelay++; } else s.dups++; }
   if(s.ready){ s.finishing=true; finishRx(s); }
   updateRx();
+  return info;
 }
 async function finishRx(s){
   const bytes=await s.bytes();
@@ -497,6 +550,7 @@ async function finishRx(s){
   stored={id:s.id,title:s.meta.t||'Quiz',hash:s.hashHex,count:s.meta.c||1,B:s.B,receivedAt:Date.now()}; storedBytes=bytes;
   const kept=LS.set('qrquiz-bundle',{...stored,b64:b64enc(bytes)});
   const secs=(performance.now()-s.t0)/1000;
+  s.verified=true; endRec(s);
   rxs.clear(); stopCam(); navigator.vibrate?.(200);
   $('rxStatus').innerHTML=`<span class="ok">Quiz received</span> in ${fmtTime(secs)}.`+(kept?'':' Keep this page open: this browser could not save a copy.');
   $('rxBar').style.width='100%';
@@ -538,7 +592,7 @@ $('codeForm').addEventListener('submit',async e=>{
 });
 
 async function startRelay(){
-  relayEnc=await bundleEncoder(storedBytes,stored,1000000+Math.floor(Math.random()*1e9));
+  relayEnc=await bundleEncoder(storedBytes,stored,RELAY_J+Math.floor(Math.random()*1e9));
   try{ Q.drawQR($('relayQr'),relayEnc.infoText(),'L'); }catch(e){}
   $('relayStage').hidden=false; $('btnRelayFull').hidden=false; $('relayInfo').hidden=false;
   $('relayInfo').textContent='Sharing. Your classmates open the Student page and point their camera at your screen.';
@@ -557,6 +611,153 @@ $('btnRemove').onclick=()=>{
   else{ removeArmed=Date.now(); $('btnRemove').textContent='Tap again to remove it';
     setTimeout(()=>{ if(Date.now()-removeArmed>=4000) $('btnRemove').textContent='Remove the quiz from this phone'; },4100); }
 };
+
+
+/* ======================= RECEPTION LOG (same tables as the multiplex lab) ======================= */
+const RUNS_KEY='qrquiz-runs-v1', GH_KEY='qrlab-github-v1';
+let runs=LS.get(RUNS_KEY,[]); if(!Array.isArray(runs)) runs=[];
+let ghBusy=false, clearArmed=0;
+const r4=x=>x===''||x==null||!isFinite(x)?'':+(+x).toFixed(4);
+function endRec(sess){
+  const r=rec; rec=null;
+  if(!r||!r.qrs.length) return;                       // nothing read: nothing to keep
+  const dur=(performance.now()-r.t0)/1000, nF=r.frames.length;
+  const id=runs.reduce((m,x)=>Math.max(m,x.meta.run_id),0)+1;
+  // per slot: P = projector, R = neighbours' relays. For P, packet numbers j are consecutive per data frame,
+  // so frame loss = 1 - distinct j / (j_max - j_min + 1) over data frames.
+  const by=new Map();
+  for(const [t,fi,slot,fid,j,k] of r.qrs){ let o=by.get(slot); if(!o){o={slot,files:new Set(),ks:new Set(),fis:new Set(),reads:0};by.set(slot,o);}
+    o.reads++; o.files.add(fid); o.fis.add(fi); if(k!=='') o.ks.add(k); }
+  const slots=[...by.values()].sort((a,b)=>a.slot<b.slot?-1:1).map(o=>{
+    let lo=Infinity,hi=-Infinity; for(const k of o.ks){ if(k<lo)lo=k; if(k>hi)hi=k; }
+    const span=o.ks.size?hi-lo+1:0;
+    return {slot:o.slot,stream:o.slot==='P'?'Projector':'Neighbour phone',file_ids:[...o.files].join(' '),qr_reads:o.reads,distinct_sender_frames:o.ks.size||'',
+            sender_frames_in_window:span||'',frame_loss:span?r4(1-o.ks.size/span):'',success_per_processed_frame:nF?r4(o.fis.size/nF):'',
+            mer_codes_measured:0,modules_measured:0,module_errors:0,mer_pooled:'',mer_median:''};
+  });
+  const s=sess, done=!!(s&&s.verified), tDone=done?(performance.now()-r.t0):0, comp=done?(tDone-s.tFirst)/1000:'';
+  const files=s?[{file_id:s.id,stream:'Quiz bundle',name:(s.meta&&s.meta.t)||'',size_bytes:s.size||'',K:s.K||'',B:s.B||'',t_first_s:r4(s.tFirst/1000),
+    t_done_s:done?r4(tDone/1000):'',complete_s:done?r4(comp):'',blocks_recovered:s.recovered,unique_packets:s.seen.size,qr_reads:s.reads,duplicates:s.dups||0,
+    overhead:done&&s.K?r4(s.seen.size/s.K-1):'',goodput_Bps:done&&comp>0?+(s.size/comp).toFixed(1):'',verified:done?1:''}]:[];
+  const pms=r.frames.map(f=>f[2]), losses=slots.filter(x=>x.frame_loss!=='').map(x=>x.frame_loss);
+  const summary={frames_processed:nF,proc_fps:dur?r4(nF/dur):'',mean_proc_ms:pms.length?r4(pms.reduce((a,b)=>a+b,0)/pms.length):'',qr_reads:r.qrs.length,
+    slots_seen:slots.length,mean_frame_loss:losses.length?r4(losses.reduce((a,b)=>a+b,0)/losses.length):'',mer_pooled:'',files_seen:files.length,files_done:done?1:0,
+    max_complete_s:done?r4(comp):'',total_goodput_Bps:files.length&&files[0].goodput_Bps!==''?files[0].goodput_Bps:'',
+    packets_from_relay:s?s.fromRelay||0:0};
+  const meta={...r.meta,run_id:id,label:'quiz reception',distance_m:$('resDist').value===''?'':+$('resDist').value,notes:$('resNotes').value.trim(),
+    duration_s:r4(dur),scheme:'Quiz',mode:'Q',colors:1,tiles:1,base_amp:'',ecc:'',sender_fps:'',device:(navigator.userAgent||'').slice(0,160),
+    proc_res:r.meta.decoder==='jsQR'?1280:'native',mer_measured:0,receive_filter:''};
+  runs.push({meta,summary,slots,files,frames:r.frames,qrs:r.qrs});
+  const saved=LS.set(RUNS_KEY,runs);
+  renderRuns(saved?'':'This phone\'s storage is full. Save the data to GitHub or download it, then clear it.');
+}
+function renderRuns(extra){
+  const pending=runs.filter(r=>!r.uploaded).length;
+  $('resStatus').innerHTML=(runs.length?`${runs.length} reception${runs.length>1?'s':''} recorded, ${pending} not yet saved to GitHub.`:'No receptions recorded yet.')+(extra?` <span class="bad">${esc(extra)}</span>`:'');
+  $('btnGh').disabled=!pending||ghBusy; $('btnGh').textContent=pending?`Save ${pending} to GitHub`:'All saved to GitHub';
+  $('btnExport').disabled=!runs.length; $('btnClearRuns').disabled=!runs.length;
+}
+$('btnClearRuns').onclick=()=>{
+  if(Date.now()-clearArmed<4000){ runs=[]; LS.set(RUNS_KEY,runs); clearArmed=0; $('btnClearRuns').textContent='Clear recorded data'; renderRuns(); }
+  else{ clearArmed=Date.now(); const un=runs.filter(r=>!r.uploaded).length; $('btnClearRuns').textContent='Tap again to delete'+(un?` (${un} not on GitHub)`:'');
+        setTimeout(()=>{ if(Date.now()-clearArmed>=4000) $('btnClearRuns').textContent='Clear recorded data'; },4100); }
+};
+
+function csv(cols,rows){
+  const f=v=>{ if(v===undefined||v===null) return ''; const t=String(v); return /[",\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t; };
+  return cols.join(',')+'\n'+rows.map(r=>r.map(f).join(',')).join('\n')+'\n';
+}
+const RUN_COLS=['run_id','label','distance_m','notes','start_iso','duration_s','scheme','mode','colors','tiles','base_amp','ecc','sender_fps',
+  'device','video_res','camera_fps','proc_res','decoder','mer_measured','receive_filter'];
+const SUM_COLS=['frames_processed','proc_fps','mean_proc_ms','qr_reads','slots_seen','mean_frame_loss','mer_pooled','files_seen','files_done','max_complete_s','total_goodput_Bps','packets_from_relay'];
+const SLOT_COLS=['slot','stream','file_ids','qr_reads','distinct_sender_frames','sender_frames_in_window','frame_loss','success_per_processed_frame',
+  'mer_codes_measured','modules_measured','module_errors','mer_pooled','mer_median'];
+const FILE_COLS=['file_id','stream','name','size_bytes','K','B','t_first_s','t_done_s','complete_s','blocks_recovered','unique_packets','qr_reads','duplicates','overhead','goodput_Bps','verified'];
+const FRAME_COLS=['frame_idx','t_ms','proc_ms','qr_reads','new_packets','duplicate_packets','info_frames','blocks_recovered_total','base_ok','enh_ok','sic_variant'];
+const QR_COLS=['t_ms','frame_idx','slot','file_id','j','k','modules','module_errors','new_packet'];
+const README=`QR Quiz reception dataset
+Generated ${new Date().toISOString()} by https://amro2021.github.io/qr-transfer/quiz/
+Same tables as the multiplex lab (join on run_id). One run = one student phone receiving one quiz.
+slot P = the projector stream, R = packets relayed by neighbours' phones.
+k = packet number j of projector data frames (consecutive per data frame), so frame_loss for slot P is
+1 - distinct j / (j_max - j_min + 1) over data frames. No frame counter exists for relays.
+packets_from_relay (runs.csv) = new packets that came from neighbours' phones.
+Module errors are not measured on the quiz page.
+`;
+function buildDataset(list){
+  const rows=(key,cols)=>list.flatMap(r=>(r[key]||[]).map(x=>[r.meta.run_id,...cols.map(c=>x[c])]));
+  return [
+    {name:'runs.csv',text:csv([...RUN_COLS,...SUM_COLS],list.map(r=>[...RUN_COLS.map(c=>r.meta[c]),...SUM_COLS.map(c=>r.summary[c])]))},
+    {name:'slots.csv',text:csv(['run_id',...SLOT_COLS],rows('slots',SLOT_COLS))},
+    {name:'files.csv',text:csv(['run_id',...FILE_COLS],rows('files',FILE_COLS))},
+    {name:'frames.csv',text:csv(['run_id',...FRAME_COLS],list.flatMap(r=>r.frames.map(f=>[r.meta.run_id,...f])))},
+    {name:'qrs.csv',text:csv(['run_id',...QR_COLS],list.flatMap(r=>r.qrs.map(q=>[r.meta.run_id,...q])))},
+    {name:'README.txt',text:README},
+  ];
+}
+const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
+function crc32(b){let c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=CRC_T[(c^b[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+async function deflateRaw(u8){
+  if(typeof CompressionStream==='undefined') return null;
+  try{ return new Uint8Array(await new Response(new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer()); }catch(e){ return null; }
+}
+async function makeZip(list){
+  const te=new TextEncoder(), parts=[], cen=[], now=new Date();
+  const time=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1), date=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate();
+  const put=(dv,spec)=>spec.forEach(([o,v,n])=>n===4?dv.setUint32(o,v,true):dv.setUint16(o,v,true));
+  let off=0;
+  for(const f of list){
+    const name=te.encode(f.name), data=te.encode(f.text), crc=crc32(data), z=await deflateRaw(data), method=z&&z.length<data.length?8:0, body=method?z:data;
+    const lh=new DataView(new ArrayBuffer(30));
+    put(lh,[[0,0x04034b50,4],[4,20,2],[6,0x0800,2],[8,method,2],[10,time,2],[12,date,2],[14,crc,4],[18,body.length,4],[22,data.length,4],[26,name.length,2],[28,0,2]]);
+    parts.push(new Uint8Array(lh.buffer),name,body);
+    const ch=new DataView(new ArrayBuffer(46));
+    put(ch,[[0,0x02014b50,4],[4,20,2],[6,20,2],[8,0x0800,2],[10,method,2],[12,time,2],[14,date,2],[16,crc,4],[20,body.length,4],[24,data.length,4],[28,name.length,2],
+            [30,0,2],[32,0,2],[34,0,2],[36,0,2],[38,0,4],[42,off,4]]);
+    cen.push(new Uint8Array(ch.buffer),name); off+=30+name.length+body.length;
+  }
+  const size=cen.reduce((a,b)=>a+b.length,0), end=new DataView(new ArrayBuffer(22));
+  put(end,[[0,0x06054b50,4],[4,0,2],[6,0,2],[8,list.length,2],[10,list.length,2],[12,size,4],[16,off,4],[20,0,2]]);
+  return new Blob([...parts,...cen,new Uint8Array(end.buffer)],{type:'application/zip'});
+}
+$('btnExport').onclick=async()=>{
+  const url=URL.createObjectURL(await makeZip(buildDataset(runs))), a=document.createElement('a');
+  a.href=url; a.download=`qr-quiz-receptions-${new Date().toISOString().slice(0,16).replace(/[-:T]/g,'')}.zip`; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),10000);
+};
+
+try{ const gh=LS.get(GH_KEY,{}); for(const k of ['repo','folder','device']) if(gh[k]) $('gh'+k[0].toUpperCase()+k.slice(1)).value=gh[k]; if(gh.token) $('ghToken').value=gh.token; }catch(e){}
+function rememberGh(){ const g={repo:$('ghRepo').value.trim(),folder:$('ghFolder').value.trim(),device:$('ghDevice').value.trim()}; if($('ghRemember').checked) g.token=$('ghToken').value.trim(); LS.set(GH_KEY,g); }
+['ghRepo','ghFolder','ghDevice','ghToken','ghRemember'].forEach(id=>$(id).addEventListener('change',rememberGh));
+async function blobToBase64(blob){ return b64enc(new Uint8Array(await blob.arrayBuffer())); }
+$('btnGh').onclick=async()=>{
+  const pending=runs.filter(r=>!r.uploaded), say=h=>{ $('resStatus').innerHTML=h; };
+  if(!pending.length) return;
+  const repo=$('ghRepo').value.trim(), token=$('ghToken').value.trim();
+  const folder=$('ghFolder').value.trim().replace(/^\/+|\/+$/g,'').replace(/[^\w\-\/]/g,'_')||'data';
+  const device=($('ghDevice').value.trim()||'phone').replace(/[^\w\-]/g,'_').slice(0,40);
+  if(!/^[\w.-]+\/[\w.-]+$/.test(repo)||!token){ $('ghBox').open=true; return say('<span class="bad">Enter the repository and the access token in GitHub settings first.</span>'); }
+  rememberGh(); ghBusy=true; renderRuns(); say(`Saving ${pending.length} reception${pending.length>1?'s':''} to GitHub…`);
+  try{
+    const path=`${folder}/quiz-${device}-${new Date().toISOString().replace(/[-:]/g,'').replace('T','-').slice(0,15)}.zip`;
+    const content=await blobToBase64(await makeZip(buildDataset(pending)));
+    let res;
+    for(let attempt=0;attempt<4;attempt++){
+      res=await fetch(`https://api.github.com/repos/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`,{method:'PUT',
+        headers:{Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},
+        body:JSON.stringify({message:`Add quiz reception data: ${pending.length} run(s) from ${device}`,content})});
+      if(res.status!==409) break;
+      say(`GitHub is busy with other saves. Retrying (${attempt+1} of 3)…`);
+      await new Promise(r=>setTimeout(r,1000+Math.random()*3000*(attempt+1)));
+    }
+    ghBusy=false;
+    if(res.ok){ pending.forEach(r=>r.uploaded=path); LS.set(RUNS_KEY,runs); renderRuns(); $('resStatus').innerHTML+=' <span class="ok">Saved.</span>'; }
+    else{ const msg={401:'GitHub rejected the token. Check that it was copied in full and has not expired.',403:'The token can\'t write to this repository.',
+      404:'GitHub can\'t find the repository, or the token has no access to it.',409:'GitHub is still busy. Wait a minute and try again.'}[res.status]||`GitHub returned an error (${res.status}).`;
+      renderRuns(); say('<span class="bad">'+msg+'</span> Your data is still on this phone.'); }
+  }catch(e){ ghBusy=false; renderRuns(); say('<span class="bad">Could not reach GitHub. Check the internet connection and try again.</span> Your data is still on this phone.'); }
+};
+renderRuns();
 
 renderStudent();
 showTab(location.hash==='#teacher'?'teacher':location.hash==='#student'?'student':LS.get('qrquiz-tab','student'));

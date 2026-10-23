@@ -29,7 +29,8 @@ import matplotlib.pyplot as plt
 
 TABLES = ["runs", "slots", "files", "frames", "qrs"]
 CLASS_COLORS = {"Red": "#c62828", "Green": "#2e7d32", "Blue": "#1565c0", "B/W": "#212121",
-                "Base layer": "#e07b00", "Enhancement layer": "#6a1b9a"}
+                "Base layer": "#e07b00", "Enhancement layer": "#6a1b9a",
+                "Projector": "#00838f", "Neighbour phone": "#8d6e00"}
 MARKERS = ["o", "s", "^", "D", "v", "P", "X", "*"]
 
 plt.rcParams.update({
@@ -80,6 +81,10 @@ def stream_class(slot):
         return "Base layer"
     if slot in ("e", "enh"):
         return "Enhancement layer"
+    if slot == "P":                      # quiz page: projector stream
+        return "Projector"
+    if slot == "R":                      # quiz page: neighbours' relays (multiplex slots are R0, R1, ...)
+        return "Neighbour phone"
     return {"R": "Red", "G": "Green", "B": "Blue", "L": "B/W"}.get(slot[:1], slot)
 
 
