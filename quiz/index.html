@@ -59,6 +59,14 @@ ol.how{margin:0;padding-left:20px;font-size:14px;display:flex;flex-direction:col
 .stage canvas{display:block;width:100%;height:auto;aspect-ratio:1;max-width:100%;image-rendering:pixelated}
 .stage:fullscreen{width:100vw;height:100vh;display:flex;align-items:center;justify-content:center;border-radius:0}
 .stage:fullscreen canvas{width:auto;height:100vh;max-width:100vw}
+.stage{position:relative}
+.stagecap{position:absolute;left:0;right:0;bottom:0;text-align:center;font:600 14px/1.6 var(--sans);color:#14181d;background:rgba(255,255,255,.9)}
+.stage:fullscreen .stagecap{font-size:2.4vh}
+.tbar{display:grid;grid-template-columns:7.5em 1fr 3.2em;gap:8px;align-items:center;font-size:13px}
+.tbar .tb{height:12px;border-radius:6px;background:var(--well);overflow:hidden}
+.tbar .tb i{display:block;height:100%;background:var(--ok)}
+.tbar .tv{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.bestlvl{font-size:40px;font-weight:700;font-family:var(--mono);line-height:1}
 video{width:100%;max-height:45vh;border-radius:10px;background:#000;object-fit:cover;display:block}
 .readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px}
 .readout div{background:var(--well);border-radius:8px;padding:7px 9px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
@@ -126,6 +134,15 @@ label.check input{width:18px;height:18px}
       <button id="btnCamStop" disabled>Stop camera</button>
     </div>
     <label id="zoomWrap" hidden>Zoom <span id="zoomVal" class="mono"></span><input type="range" id="zoom"></label>
+    <label for="camRes">Camera detail<select id="camRes"><option value="1280" selected>Normal</option><option value="1920">High: reads smaller codes, slower on some phones</option></select></label>
+  </div>
+  <div class="panel" id="sTest" hidden>
+    <span class="step">Distance test</span>
+    <p class="note">You can read up to level</p>
+    <div class="bestlvl" id="testBest">–</div>
+    <div id="testBars" style="display:flex;flex-direction:column;gap:6px"></div>
+    <p class="note">Tell your teacher your level and how far you sit from the screen. A level counts when at least 80 % of its frames are read.</p>
+    <div class="actions"><button id="btnTestReset">Restart the test</button></div>
   </div>
   <video id="video" playsinline muted hidden></video>
   <div class="panel" id="sProgress" hidden>
@@ -227,15 +244,18 @@ label.check input{width:18px;height:18px}
   </div>
 
   <div class="panel">
-    <details>
+    <details open>
       <summary class="note" style="cursor:pointer">Broadcast settings</summary>
       <div class="fields" style="margin-top:10px">
-        <label for="blk">Block size (bytes)<input type="number" id="blk" value="400" min="40" max="1200"></label>
-        <label for="fps">Frames per second<input type="number" id="fps" value="12" min="1" max="30"></label>
+        <label for="lvl">QR size<select id="lvl"></select></label>
+        <label for="fps">Frames per second<input type="number" id="fps" value="6" min="1" max="30"></label>
+        <label for="blk">Block size (bytes)<input type="number" id="blk" value="80" min="8" max="1200"></label>
         <label for="ecc">QR error correction<select id="ecc"><option selected>L</option><option>M</option><option>Q</option></select></label>
         <label for="scrH">Projected image height (m)<input type="number" id="scrH" value="1.5" min="0.3" max="6" step="0.1"></label>
       </div>
-      <p class="note" style="margin-top:8px">Smaller blocks or fewer frames per second make bigger QR modules that read from farther away, but the transfer takes longer. The defaults aim at about 30 s per 100 KB.</p>
+      <p class="note" style="margin-top:8px">A smaller QR size has bigger squares, so it reads from farther away but carries less per frame. Fewer frames per second give slower phones time to read each frame. Run the distance test to find what your room needs.</p>
+      <div class="actions" style="margin-top:8px"><button id="btnTest">Run distance test</button></div>
+      <p class="note" id="testInfo" style="margin-top:6px">The projector cycles through all 7 QR sizes, about a second each. Students open the Student page and camera; their phone shows the largest level it reads reliably. Choose the level the back row can read.</p>
     </details>
     <span class="step">2 · Encrypt and broadcast</span>
     <div class="actions">
@@ -245,7 +265,7 @@ label.check input{width:18px;height:18px}
     </div>
     <p class="note" id="tInfo">Add the files, then encrypt.</p>
   </div>
-  <div class="stage" id="stage"><canvas id="qr" width="760" height="760" aria-label="Quiz QR stream"></canvas></div>
+  <div class="stage" id="stage"><canvas id="qr" width="760" height="760" aria-label="Quiz QR stream"></canvas><div class="stagecap" id="testCap" hidden></div></div>
   <div class="readout" id="tStats"></div>
 
   <div class="panel" id="codesPanel" hidden>
@@ -442,12 +462,42 @@ function updateTStats(){
 }
 function playT(){
   if(!T.enc) return;
-  pauseT();
+  stopTest(); pauseT();
   T.run=Q.broadcast($('qr'),{fps:Math.min(30,Math.max(1,+$('fps').value||12)),ecc:$('ecc').value,next:()=>T.enc.next(),onFrame:s=>{ if(s.frames%12===0) updateTStats(); }});
   $('btnPlay').textContent='Pause'; keepAwake(true);
 }
 function pauseT(){ if(T.run){ T.run.stop(); T.run=null; } $('btnPlay').textContent='Play'; keepAwake(false); }
 $('btnPlay').onclick=()=>T.run?pauseT():playT();
+
+/* QR size levels: the block size is the largest that fits the chosen QR size */
+const HEADER=17;
+function fillLevels(){
+  const ecc=$('ecc').value, cur=$('lvl').value||'3';
+  $('lvl').innerHTML=Q.levels().map(l=>{ const B=Q.maxBlockFor(l.version,ecc,PREFIX,HEADER);
+    return `<option value="${l.level}" ${B?'':'disabled'}>Level ${l.level} · ${l.modules}×${l.modules}${B?` · ${B} B`:' · too small for data'}</option>`; }).join('')+'<option value="custom">Custom block size</option>';
+  $('lvl').value=Array.from($('lvl').options||[]).some(o=>o.value===cur&&!o.disabled)?cur:'3';
+}
+function applyLevel(){
+  if($('lvl').value==='custom') return;
+  const l=Q.levels()[+$('lvl').value-1], B=Q.maxBlockFor(l.version,$('ecc').value,PREFIX,HEADER);
+  if(B&&+$('blk').value!==B){ $('blk').value=B; $('blk').dispatchEvent(new Event('change')); }
+}
+fillLevels(); applyLevel();
+$('lvl').addEventListener('change',applyLevel);
+$('ecc').addEventListener('change',()=>{ fillLevels(); applyLevel(); });
+$('blk').addEventListener('input',()=>{ $('lvl').value='custom'; });
+
+let testRun=null;
+function startTest(){
+  pauseT();
+  const fps=Math.min(30,Math.max(1,+$('fps').value||6)), ts=Q.testStream(Math.max(4,Math.round(fps)));
+  testRun=Q.broadcast($('qr'),{fps,ecc:$('ecc').value,next:()=>ts.next(),onFrame:st=>{ const c=st.current; if(c) $('testCap').textContent=`Distance test · level ${c.level} · ${c.modules}×${c.modules}`; }});
+  $('testCap').hidden=false; $('btnTest').textContent='Stop distance test'; keepAwake(true);
+  tSay(`Distance test running at ${fps} frames per second. Ask students in the back row for their level, then stop the test and choose that QR size.`);
+}
+function stopTest(){ if(!testRun) return; testRun.stop(); testRun=null; $('testCap').hidden=true; $('btnTest').textContent='Run distance test'; keepAwake(false);
+  if(T.enc){ try{ Q.drawQR($('qr'),T.enc.infoText(),$('ecc').value); }catch(e){} } }
+$('btnTest').onclick=()=>testRun?stopTest():startTest();
 $('btnFull').onclick=()=>{ try{ const r=$('stage').requestFullscreen?.(); r&&r.catch(()=>{}); }catch(e){} };
 ['fps','ecc','scrH'].forEach(id=>$(id).addEventListener('change',()=>{ if(!T.enc) return;
   if(id==='ecc'){ try{ T.n=Q.makeQR(T.enc.largestText(),$('ecc').value).getModuleCount(); }catch(e){} }
@@ -485,12 +535,21 @@ const lastBuilt=LS.get('qrquiz-teacher-built',null);
 if(lastBuilt&&lastBuilt.b64){
   $('restoreBox').hidden=false;
   $('restoreInfo').innerHTML=`<b>${esc(lastBuilt.title)}</b>, ${lastBuilt.count} version${lastBuilt.count>1?'s':''}, encrypted ${new Date(lastBuilt.builtAt).toLocaleString()}. Broadcasting it again keeps the same codes, and students who already started can continue.`;
-  $('btnRestore').onclick=async()=>{ try{ const bytes=b64dec(lastBuilt.b64); const built={...lastBuilt,B:Q.blockSize(lastBuilt.B)}; $('blk').value=built.B;
+  $('btnRestore').onclick=async()=>{ try{ const bytes=b64dec(lastBuilt.b64); const built={...lastBuilt,B:Q.blockSize(lastBuilt.B)}; $('blk').value=built.B; $('lvl').value='custom';
     if(await installBroadcast(bytes,built)){ $('restoreBox').hidden=true; tSay('Last quiz restored. Press Play.'); } }
     catch(e){ tSay('<span class="bad">The saved quiz could not be read. Encrypt it again.</span>'); } };
 }
 
 /* =============================== STUDENT =============================== */
+let meter=new Q.TestMeter(), testDirty=0;
+function renderTest(){
+  const now=performance.now(); if(now-testDirty<250) return; testDirty=now;
+  $('sTest').hidden=false;
+  const res=meter.results(), best=meter.best(0.8);
+  $('testBest').textContent=best||'–';
+  $('testBars').innerHTML=res.map(r=>`<div class="tbar"><span>Level ${r.level} · ${r.modules}²</span><span class="tb"><i style="width:${(100*r.rate).toFixed(0)}%"></i></span><span class="tv">${(100*r.rate).toFixed(0)} %</span></div>`).join('');
+}
+$('btnTestReset').onclick=()=>{ meter=new Q.TestMeter(); testDirty=0; $('testBest').textContent='–'; $('testBars').innerHTML=''; };
 let cam=null,scanning=false,rxs=new Map(),relay=null,relayEnc=null,removeArmed=0,rec=null;
 let stored=LS.get('qrquiz-bundle',null), storedBytes=null;
 if(stored){ try{ storedBytes=b64dec(stored.b64); }catch(e){ stored=null; } }
@@ -509,7 +568,7 @@ async function startCam(){
   let res='',fr='';
   try{ const st=cam.track.getSettings(); if(st.width) res=`${st.width}x${st.height}`; if(st.frameRate) fr=+st.frameRate.toFixed(2); }catch(e){}
   startRec(cam.detector?'BarcodeDetector':'jsQR',res,fr);
-  Q.eachVideoFrame(v,async()=>{ const t0=performance.now(); logFrame(await Q.readFrame(v,cam.detector),t0); },()=>scanning);
+  Q.eachVideoFrame(v,async()=>{ const t0=performance.now(); logFrame(await Q.readFrame(v,cam.detector,+$('camRes').value),t0); },()=>scanning);
 }
 function startRec(decoder,video_res,camera_fps){ rec={t0:performance.now(),frameIdx:0,frames:[],qrs:[],meta:{start_iso:new Date().toISOString(),video_res,camera_fps,decoder}}; }
 /* feed one camera frame's QR texts to the decoder and log the frame (rec = current reception) */
@@ -533,6 +592,7 @@ $('zoom').oninput=()=>{ $('zoomVal').textContent=(+$('zoom').value).toFixed(1)+'
 
 /* returns what was read, for the reception log: slot P = projector stream, R = a neighbour's relay */
 function onText(text){
+  const tst=Q.parseTest(text); if(tst){ meter.add(tst); renderTest(); return null; }
   const p=Q.parse(text,PREFIX); if(!p) return null;
   if(stored&&stored.id===p.id){ $('rxStatus').innerHTML='<span class="ok">You already have this quiz.</span>'; return null; }
   let s=rxs.get(p.id); if(!s){ if(p.K>200000) return null; s=new Q.Decoder(p.id); s.tFirst=rec?performance.now()-rec.t0:0; s.dups=0; s.fromRelay=0; rxs.set(p.id,s); }
