@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>QR Chat</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="../lib/qrlink.js"></script>
+<style>
+/* Layout: link strip (own code + camera) on top, chat chips, conversation, composer; one narrow column */
+:root{
+  --bg:#f3f5f7; --surface:#ffffff; --fg:#14181d; --muted:#5d6874; --line:#d9dee4;
+  --accent:#0a62b8; --accent-fg:#ffffff; --ok:#17803a; --bad:#b42318; --well:#eaeef2; --mine:#dcebfb;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#0f1317; --surface:#171c22; --fg:#e6eaee; --muted:#95a0ab; --line:#2a323b;
+  --accent:#4f9cf0; --accent-fg:#0b1420; --ok:#4cc172; --bad:#ff7a6e; --well:#1e252d; --mine:#1d3550; color-scheme:dark}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans)}
+main{max-width:720px;margin:0 auto;padding:14px max(16px,env(safe-area-inset-right,0px)) 40px max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:12px}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+header h1{font-size:21px;margin:0}
+header a{color:var(--accent);font-size:13px}
+.idchip{font-family:var(--mono);font-size:13px;background:var(--well);border-radius:999px;padding:4px 10px}
+button{font:inherit;font-weight:500;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--fg);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input,select{font:inherit;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);min-width:0}
+label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.note{font-size:13px;color:var(--muted);margin:0}
+.link{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:12px;align-items:start}
+@media (max-width:520px){.link{grid-template-columns:1fr}}
+.stage{background:#ffffff;border-radius:10px;width:100%;max-width:420px}
+.stage canvas{display:block;width:100%;height:auto;aspect-ratio:1;max-width:100%;image-rendering:pixelated}
+.stage:fullscreen{width:100vw;height:100vh;max-width:none;display:flex;align-items:center;justify-content:center;border-radius:0}
+.stage:fullscreen canvas{width:auto;height:min(100vh,100vw)}
+.side{display:flex;flex-direction:column;gap:8px;min-width:0}
+video{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:10px;background:#000;display:block}
+video.mirror{transform:scaleX(-1)}
+.state{display:flex;align-items:center;gap:8px;font-size:13px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:0 0 auto}
+.dot.live{background:var(--ok)}
+.btns{display:flex;flex-wrap:wrap;gap:6px}
+.btns button{flex:1 1 120px;padding:8px 10px;font-size:14px}
+.chips{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
+.chip{flex:0 0 auto;padding:7px 12px;border-radius:999px;font-size:14px;display:inline-flex;gap:6px;align-items:center}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+.badge{font-size:11px;font-weight:700;background:var(--bad);color:#fff;border-radius:999px;padding:0 6px}
+.chathead{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.chathead b{font-size:16px}
+.sec{font-size:12px;color:var(--muted)}
+.sec .code{font-family:var(--mono);color:var(--fg);letter-spacing:.06em}
+.msgs{display:flex;flex-direction:column;gap:6px;min-height:180px;max-height:46vh;overflow-y:auto;padding:4px 2px}
+.msg{max-width:82%;padding:7px 10px;border-radius:12px;background:var(--well);align-self:flex-start;word-wrap:break-word;overflow-wrap:anywhere}
+.msg.out{align-self:flex-end;background:var(--mine)}
+.msg .meta{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.msg.sys{align-self:center;background:transparent;color:var(--muted);font-size:12px;padding:2px}
+.composer{display:flex;gap:8px}
+.composer input{flex:1}
+.toggle{flex-direction:row;align-items:center;gap:6px;font-size:13px;color:var(--fg)}
+.toggle input{width:18px;height:18px}
+.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.mono{font-family:var(--mono)}
+.empty{color:var(--muted);font-size:13px;text-align:center;margin:auto}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>QR Chat</h1>
+  <span class="idchip" title="Your ID">You: <b id="myName"></b> · <span id="myId"></span></span>
+  <a href="../">QR transfer pages</a>
+</header>
+
+<section class="panel">
+  <div class="link">
+    <div class="stage" id="stage"><canvas id="qr" width="600" height="600" aria-label="Your QR stream"></canvas></div>
+    <div class="side">
+      <video id="video" playsinline muted hidden></video>
+      <div class="state"><i class="dot" id="dot"></i><span id="linkStatus">Link off. Tap Start link.</span></div>
+      <div class="btns">
+        <button class="primary" id="btnLink">Start link</button>
+        <button id="btnFlip">Use rear camera</button>
+        <button id="btnFull">Fullscreen code</button>
+      </div>
+      <p class="note">Face the two phones toward each other, screens 20–30 cm apart, so each front camera sees the other screen. Messages wait until they are delivered, so you can pull back to read and type.</p>
+    </div>
+  </div>
+</section>
+
+<nav class="chips" id="chips" aria-label="Chats"></nav>
+
+<section class="panel" id="chatPanel">
+  <div class="chathead">
+    <div><b id="chatTitle"></b><div class="sec" id="chatSec"></div></div>
+    <label class="toggle" id="e2eWrap" for="e2e"><input type="checkbox" id="e2e" checked> End-to-end encryption</label>
+  </div>
+  <div class="msgs" id="msgs" aria-live="polite"></div>
+  <form class="composer" id="composer" autocomplete="off">
+    <input id="msgInput" maxlength="500" placeholder="Message" aria-label="Message">
+    <button class="primary" type="submit">Send</button>
+  </form>
+</section>
+
+<details class="panel">
+  <summary class="note" style="cursor:pointer"><b>Settings</b></summary>
+  <div class="fields">
+    <label for="nameIn">Your name<input id="nameIn" maxlength="16"></label>
+    <label for="newId">Start a chat by ID<input id="newId" maxlength="6" placeholder="e.g. 7F2A9C" autocapitalize="characters" class="mono"></label>
+  </div>
+  <div class="btns"><button id="btnNewChat">Open chat</button></div>
+  <div class="fields">
+    <label for="lvl">QR size<select id="lvl"></select></label>
+    <label for="fps">Frames per second<input id="fps" type="number" value="5" min="1" max="20"></label>
+    <label for="ecc">QR error correction<select id="ecc"><option>L</option><option selected>M</option><option>Q</option></select></label>
+  </div>
+  <label for="groupPass">Group passphrase (encrypts the Everyone chat; everyone needs the same one)<input id="groupPass" type="password" autocomplete="off"></label>
+  <div class="btns"><button id="btnClear">Clear all chats</button></div>
+  <p class="note">Chats are kept only in this browser tab and disappear when you close it. Your ID stays the same on this phone; your encryption keys are new each time you open the page.</p>
+</details>
+</main>
+
+<script>
+/* =====================================================================
+   QR CHAT over a two-way screen-to-camera link (lib/qrlink.js: base45 alphanumeric QR codes)
+   Every phone shows its own stream and reads others. QR text = "C1" + base45(frame).
+   Frame header: type(1) | from id(3) | session epoch(1) | n acks(1) | n × ack
+     ack = peer id(3) | peer epoch(1) | base(u16) | mask(u16)
+           "I have every message from that peer session up to seq base, plus seq base+1+i where bit i is set"
+   type 1, message chunk: to(3, 000000 = everyone) | seq(u16) | part(1) | total(1) | flags(1) | payload
+     flags bit 0: end-to-end encrypted (ECDH P-256 key shared from both public keys, AES-256-GCM)
+     flags bit 1: encrypted with the group passphrase (PBKDF2 → AES-256-GCM)
+     encrypted body = iv(12) | ciphertext, with from|to|seq as additional authenticated data
+   type 2, hello: name length(1) | name (UTF-8) | ECDH public key (65, raw)
+   type 3, acknowledgements only
+   A message is sent again and again until acknowledged (direct) or seen by every nearby phone (group).
+   ===================================================================== */
+const $=id=>document.getElementById(id), Q=QRLink, PREFIX='C1', ALL='000000';
+const te=new TextEncoder(), td=new TextDecoder();
+const SS={get(k,d){try{const v=sessionStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}},set(k,v){try{sessionStorage.setItem(k,JSON.stringify(v));}catch(e){}}};
+const LS={get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}};
+const hexU=u=>Q.hex(u).toUpperCase(), fromHex=h=>new Uint8Array(h.match(/../g).map(x=>parseInt(x,16)));
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+const clock=t=>new Date(t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+function concat(list){ const n=list.reduce((a,b)=>a+b.length,0), o=new Uint8Array(n); let k=0; for(const b of list){ o.set(b,k); k+=b.length; } return o; }
+
+/* ---------- identity and keys ---------- */
+let myId=LS.get('qrchat-id',null);
+if(!/^[0-9A-F]{6}$/.test(myId||'')||myId===ALL){ do{ myId=hexU(crypto.getRandomValues(new Uint8Array(3))); }while(myId===ALL); LS.set('qrchat-id',myId); }
+let myName=LS.get('qrchat-name','')||('Phone '+myId.slice(0,3));
+const myEpoch=crypto.getRandomValues(new Uint8Array(1))[0];
+let myKeys=null, myPubRaw=null;
+const keysReady=(async()=>{ myKeys=await crypto.subtle.generateKey({name:'ECDH',namedCurve:'P-256'},false,['deriveKey']);
+  myPubRaw=new Uint8Array(await crypto.subtle.exportKey('raw',myKeys.publicKey)); })();
+let groupKey=null;
+async function setGroupPass(p){
+  if(!p){ groupKey=null; return; }
+  const base=await crypto.subtle.importKey('raw',te.encode(p),'PBKDF2',false,['deriveKey']);
+  groupKey=await crypto.subtle.deriveKey({name:'PBKDF2',salt:te.encode('qr-chat-group-v1'),iterations:100000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+  retryPending();
+}
+async function safetyCode(a,b){
+  const [x,y]=Q.hex(a)<Q.hex(b)?[a,b]:[b,a], h=new Uint8Array(await crypto.subtle.digest('SHA-256',concat([x,y])));
+  const n=((h[0]<<24)|(h[1]<<16)|(h[2]<<8)|h[3])>>>0; const d=String(n%100000000).padStart(8,'0'); return d.slice(0,4)+' '+d.slice(4);
+}
+const aadOf=(from,to,seq)=>concat([fromHex(from),fromHex(to),new Uint8Array([seq>>8,seq&255])]);
+async function seal(key,plain,aad){ const iv=crypto.getRandomValues(new Uint8Array(12)); return concat([iv,new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:aad},key,plain))]); }
+async function unseal(key,body,aad){ return new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:body.subarray(0,12),additionalData:aad},key,body.subarray(12))); }
+
+/* ---------- state ---------- */
+const peers=new Map();        // id -> {id,name,epoch,pubHex,key,safety,lastSeen}
+const rcv=new Map();          // "id:epoch" -> {id,epoch,seqs:Set,lastTime}  (what I acknowledge)
+const parts=new Map();        // "id:epoch:seq" -> {total,chunks,got}
+let pendingIn=[];             // received messages waiting for a key
+let waitingOut=[];            // my direct messages waiting for the peer's key
+let out=[];                   // outbox: {seq,to,chunks,ackedBy:Set,created,msg,done}
+let mySeq=1;
+const chats=new Map();        // id ('ALL' or peer id) -> {id,title,msgs:[],unread,e2e}
+for(const c of SS.get('qrchat-chats',[])) chats.set(c.id,{...c,msgs:(c.msgs||[]).map(m=>m.status==='sending'||m.status==='waiting'?{...m,status:'not sent (page reloaded)'}:m)});
+if(!chats.has('ALL')) chats.set('ALL',{id:'ALL',title:'Everyone',msgs:[],unread:0,e2e:false});
+let current=SS.get('qrchat-current','ALL'); if(!chats.has(current)) current='ALL';
+let saveT=0; function save(){ clearTimeout(saveT); saveT=setTimeout(()=>{ SS.set('qrchat-chats',[...chats.values()]); SS.set('qrchat-current',current); },300); }
+function chatFor(id){ if(!chats.has(id)){ const p=peers.get(id); chats.set(id,{id,title:p?p.name:id,msgs:[],unread:0,e2e:true}); } return chats.get(id); }
+
+/* ---------- link settings ---------- */
+function fillLevels(){
+  const cur=$('lvl').value||'3';
+  $('lvl').innerHTML=Q.levels().map(l=>{ const n=Q.maxBytesFor(l.version,$('ecc').value,PREFIX.length)-30;
+    return `<option value="${l.level}" ${n>=8?'':'disabled'}>Level ${l.level} · ${l.modules}×${l.modules}${n>=8?` · ${n} B per frame`:' · too small'}</option>`; }).join('');
+  $('lvl').value=Array.from($('lvl').options||[]).some(o=>o.value===cur&&!o.disabled)?cur:'3';
+}
+function chunkSize(){ const l=Q.levels()[(+$('lvl').value||3)-1]; return Math.max(8,Q.maxBytesFor(l.version,$('ecc').value,PREFIX.length)-30); }
+
+/* ---------- sending ---------- */
+function head(type,acks){
+  const p=[type,...fromHex(myId),myEpoch,acks.length];
+  for(const a of acks) p.push(...fromHex(a.id),a.epoch,a.base>>8,a.base&255,a.mask>>8,a.mask&255);
+  return p;
+}
+let ackRot=0;
+function ackEntries(max){
+  const now=Date.now(), list=[...rcv.values()].filter(r=>now-r.lastTime<180000);
+  const n=Math.min(max,list.length), res=[];
+  for(let i=0;i<n;i++){ const r=list[(ackRot+i)%list.length];
+    let base=0; while(r.seqs.has(base+1)) base++;
+    let mask=0; for(let b=0;b<16;b++) if(r.seqs.has(base+1+b)) mask|=1<<b;
+    res.push({id:r.id,epoch:r.epoch,base,mask}); }
+  ackRot+=n; return res;
+}
+let frameNo=0, rr=0;
+function activeChunks(){ const l=[]; for(const m of out) if(!m.done) m.chunks.forEach((c,i)=>l.push({m,i})); return l; }
+function nextFrame(){
+  frameNo++;
+  const pending=activeChunks();
+  let bytes;
+  if(myPubRaw&&(frameNo%8===1||(!pending.length&&frameNo%3===0))){
+    const nm=te.encode(myName).slice(0,24);
+    bytes=new Uint8Array([...head(2,[]),nm.length,...nm,...myPubRaw]);
+  }else if(pending.length){
+    const {m,i}=pending[rr++%pending.length];
+    bytes=new Uint8Array([...head(1,ackEntries(2)),...fromHex(m.to),m.seq>>8,m.seq&255,i,m.chunks.length,m.flags,...m.chunks[i]]);
+  }else bytes=new Uint8Array(head(3,ackEntries(4)));
+  return PREFIX+Q.b45enc(bytes);
+}
+async function enqueue(chatId,msg,plain){
+  const to=chatId==='ALL'?ALL:chatId, seq=mySeq++&0xFFFF, aad=aadOf(myId,to,seq);
+  let flags=0, body=plain;
+  if(chatId!=='ALL'&&msg.enc){ const p=peers.get(chatId); body=await seal(p.key,plain,aad); flags|=1; }
+  else if(chatId==='ALL'&&groupKey){ body=await seal(groupKey,plain,aad); flags|=2; msg.enc=true; }
+  const C=chunkSize(), chunks=[]; for(let k=0;k<body.length;k+=C) chunks.push(body.slice(k,k+C));
+  if(!chunks.length) chunks.push(new Uint8Array(0));
+  if(chunks.length>255){ msg.status='too long'; render(); return; }
+  out.push({seq,to,flags,chunks,ackedBy:new Set(),created:Date.now(),msg,done:false});
+  msg.status='sending'; render(); save();
+}
+async function send(text){
+  const c=chats.get(current); if(!c||!text.trim()) return;
+  const msg={dir:'out',from:myId,text,t:Date.now(),status:'sending',enc:false};
+  c.msgs.push(msg);
+  if(c.id!=='ALL'&&c.e2e){
+    const p=peers.get(c.id);
+    msg.enc=true;
+    if(!p||!p.key){ msg.status='waiting'; waitingOut.push({chatId:c.id,msg}); render(); save(); return; }
+  }
+  await enqueue(c.id,msg,te.encode(text));
+}
+
+/* ---------- receiving ---------- */
+function onText(text){
+  if(typeof text!=='string'||!text.startsWith(PREFIX)) return false;
+  const b=Q.b45dec(text.slice(PREFIX.length)); if(!b||b.length<6) return false;
+  const type=b[0], from=hexU(b.subarray(1,4)), epoch=b[4], na=b[5];
+  if(from===myId) return false;                                   // own screen seen in a reflection
+  let o=6; if(b.length<o+8*na) return false;
+  const acks=[]; for(let i=0;i<na;i++,o+=8) acks.push({id:hexU(b.subarray(o,o+3)),epoch:b[o+3],base:(b[o+4]<<8)|b[o+5],mask:(b[o+6]<<8)|b[o+7]});
+  seen(from,epoch);
+  for(const a of acks) if(a.id===myId&&a.epoch===myEpoch) onAck(from,a);
+  if(type===1&&b.length>=o+8){
+    const to=hexU(b.subarray(o,o+3)), seq=(b[o+3]<<8)|b[o+4], part=b[o+5], total=b[o+6], flags=b[o+7];
+    if(total&&part<total) onChunk(from,epoch,to,seq,part,total,flags,b.slice(o+8));
+  }else if(type===2&&b.length>=o+1){
+    const nl=b[o], name=td.decode(b.subarray(o+1,o+1+nl)), pub=b.slice(o+1+nl,o+1+nl+65);
+    if(pub.length===65) onHello(from,epoch,name,pub);
+  }
+  return true;
+}
+function seen(id,epoch){ let p=peers.get(id); if(!p){ p={id,name:id,epoch,lastSeen:0}; peers.set(id,p); } p.lastSeen=Date.now(); lastPeer=id; }
+let lastPeer=null;
+async function onHello(id,epoch,name,pub){
+  const p=peers.get(id), pubHex=Q.hex(pub);
+  p.name=name||id;
+  const c=chatFor(id); if(c.title!==p.name){ c.title=p.name; renderChips(); }
+  if(p.pubHex===pubHex&&p.epoch===epoch) return;
+  p.pubHex=pubHex; p.epoch=epoch; p.key=null;
+  await keysReady;
+  try{
+    const pk=await crypto.subtle.importKey('raw',pub,{name:'ECDH',namedCurve:'P-256'},false,[]);
+    p.key=await crypto.subtle.deriveKey({name:'ECDH',public:pk},myKeys.privateKey,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+    p.safety=await safetyCode(myPubRaw,pub);
+  }catch(e){ p.key=null; return; }
+  const ready=waitingOut.filter(w=>w.chatId===id); waitingOut=waitingOut.filter(w=>w.chatId!==id);
+  for(const w of ready) await enqueue(w.chatId,w.msg,te.encode(w.msg.text));
+  retryPending(); render();
+}
+function onAck(from,a){
+  let changed=false;
+  for(const m of out){
+    if(m.done||(m.to!==from&&m.to!==ALL)) continue;
+    const d=m.seq-a.base;
+    if(m.seq<=a.base||(d>=1&&d<=16&&(a.mask>>(d-1))&1)){
+      if(!m.ackedBy.has(from)){ m.ackedBy.add(from); changed=true; }
+      if(m.to===from){ m.done=true; m.msg.status='delivered'; }
+      else{ m.msg.status=`seen by ${m.ackedBy.size}`; m.msg.seenBy=[...m.ackedBy]; }
+    }
+  }
+  if(changed){ render(); save(); }
+}
+function onChunk(from,epoch,to,seq,part,total,flags,payload){
+  if(to!==myId&&to!==ALL) return;                                 // addressed to someone else
+  const rk=`${from}:${epoch}`; let r=rcv.get(rk); if(!r){ r={id:from,epoch,seqs:new Set(),lastTime:0}; rcv.set(rk,r); }
+  r.lastTime=Date.now();
+  if(r.seqs.has(seq)) return;
+  const k=`${rk}:${seq}`; let a=parts.get(k); if(!a||a.total!==total){ a={total,chunks:new Array(total),got:0}; parts.set(k,a); }
+  if(a.chunks[part]) return;
+  a.chunks[part]=payload; a.got++;
+  if(a.got<a.total) return;
+  parts.delete(k); r.seqs.add(seq);
+  deliver({from,epoch,to,seq,flags,body:concat(a.chunks),t:Date.now()});
+}
+async function deliver(m){
+  const chatId=m.to===ALL?'ALL':m.from, c=chatFor(chatId), p=peers.get(m.from);
+  let text=null;
+  try{
+    if(m.flags&1){ if(!p||!p.key||p.epoch!==m.epoch) return hold(m,'waiting for the sender\'s key'); text=td.decode(await unseal(p.key,m.body,aadOf(m.from,m.to,m.seq))); }
+    else if(m.flags&2){ if(!groupKey) return hold(m,'encrypted with a group passphrase'); text=td.decode(await unseal(groupKey,m.body,aadOf(m.from,m.to,m.seq))); }
+    else text=td.decode(m.body);
+  }catch(e){ return hold(m,m.flags&2?'the group passphrase does not match':'could not be decrypted'); }
+  const ph=c.msgs.find(x=>x.ref===`${m.from}:${m.epoch}:${m.seq}`);
+  const entry={dir:'in',from:m.from,name:p?p.name:m.from,text,t:m.t,enc:!!(m.flags&3)};
+  if(ph) Object.assign(ph,entry,{locked:false}); else c.msgs.push(entry);
+  if(current!==chatId||document.hidden) c.unread=(c.unread||0)+1;
+  navigator.vibrate?.(60); render(); save();
+}
+function hold(m,why){
+  if(!pendingIn.some(x=>x.from===m.from&&x.epoch===m.epoch&&x.seq===m.seq)) pendingIn.push(m);
+  const c=chatFor(m.to===ALL?'ALL':m.from), ref=`${m.from}:${m.epoch}:${m.seq}`;
+  if(!c.msgs.some(x=>x.ref===ref)){ const p=peers.get(m.from); c.msgs.push({dir:'in',from:m.from,name:p?p.name:m.from,text:'',locked:why,ref,t:m.t}); render(); save(); }
+  else{ const x=c.msgs.find(x=>x.ref===ref); x.locked=why; render(); }
+}
+function retryPending(){ const l=pendingIn; pendingIn=[]; for(const m of l) deliver(m); }
+
+/* group messages stop repeating once every nearby phone has them, or after two minutes */
+setInterval(()=>{
+  const now=Date.now(), near=[...peers.values()].filter(p=>now-p.lastSeen<60000).map(p=>p.id);
+  let changed=false;
+  for(const m of out){ if(m.done||m.to!==ALL) continue;
+    if((near.length&&near.every(id=>m.ackedBy.has(id)))||now-m.created>120000){ m.done=true; m.msg.status=m.ackedBy.size?`seen by ${m.ackedBy.size}`:'not seen by anyone'; changed=true; } }
+  out=out.filter(m=>!m.done||now-m.created<5000);
+  updateStatus(); if(changed){ render(); save(); }
+},1000);
+
+/* ---------- link: show own stream, read others ---------- */
+let bc=null, cam=null, scanning=false, facing=LS.get('qrchat-facing','user');
+function startStream(){ if(bc) bc.stop(); bc=Q.broadcast($('qr'),{fps:Math.min(20,Math.max(1,+$('fps').value||5)),ecc:$('ecc').value,next:nextFrame}); }
+async function startLink(){
+  try{ cam=await Q.openCamera({facing}); }
+  catch(e){ $('linkStatus').innerHTML='<span style="color:var(--bad)">The camera could not start.</span> Allow camera access and try again.'; return; }
+  const v=$('video'); v.hidden=false; v.classList.toggle('mirror',facing==='user'); v.srcObject=cam.stream; try{ await v.play(); }catch(e){}
+  scanning=true; $('dot').classList.add('live'); $('btnLink').textContent='Stop link'; $('btnLink').classList.remove('primary');
+  Q.eachVideoFrame(v,async()=>{ for(const t of await Q.readFrame(v,cam.detector)) onText(t); },()=>scanning);
+  try{ wakeLock=await navigator.wakeLock?.request('screen'); }catch(e){}
+  updateStatus();
+}
+let wakeLock=null;
+function stopLink(){ scanning=false; cam?.stream.getTracks().forEach(t=>t.stop()); cam=null; $('video').hidden=true; $('dot').classList.remove('live');
+  $('btnLink').textContent='Start link'; $('btnLink').classList.add('primary'); try{ wakeLock?.release(); }catch(e){} wakeLock=null; updateStatus(); }
+$('btnLink').onclick=()=>scanning?stopLink():startLink();
+$('btnFlip').onclick=async()=>{ facing=facing==='user'?'environment':'user'; LS.set('qrchat-facing',facing); $('btnFlip').textContent=facing==='user'?'Use rear camera':'Use front camera'; if(scanning){ stopLink(); await startLink(); } };
+$('btnFlip').textContent=facing==='user'?'Use rear camera':'Use front camera';
+$('btnFull').onclick=()=>{ try{ if(document.fullscreenElement) document.exitFullscreen(); else { const r=$('stage').requestFullscreen?.(); r&&r.catch(()=>{}); } }catch(e){} };
+$('stage').onclick=()=>{ if(document.fullscreenElement) document.exitFullscreen(); };
+function updateStatus(){
+  if(!scanning){ $('linkStatus').textContent='Link off. Tap Start link.'; return; }
+  const now=Date.now(), near=[...peers.values()].filter(p=>now-p.lastSeen<5000);
+  const sending=out.filter(m=>!m.done).length;
+  $('linkStatus').innerHTML=(near.length?`Linked with <b>${near.map(p=>esc(p.name)).join(', ')}</b>`:'Looking for another phone…')+(sending?` · ${sending} message${sending>1?'s':''} sending`:'');
+}
+
+/* ---------- interface ---------- */
+function renderChips(){
+  const list=[...chats.values()].sort((a,b)=>a.id==='ALL'?-1:b.id==='ALL'?1:0);
+  $('chips').innerHTML=list.map(c=>`<button type="button" class="chip" data-id="${c.id}" aria-pressed="${c.id===current}">${esc(c.title)}${c.unread?` <span class="badge">${c.unread}</span>`:''}</button>`).join('');
+  $('chips').querySelectorAll('.chip').forEach(b=>b.onclick=()=>{ current=b.dataset.id; const c=chats.get(current); c.unread=0; save(); render(); });
+}
+function render(){
+  renderChips();
+  const c=chats.get(current), p=peers.get(current);
+  $('chatTitle').textContent=c.id==='ALL'?'Everyone nearby':`${c.title} · ${c.id}`;
+  $('e2eWrap').hidden=c.id==='ALL'; $('e2e').checked=!!c.e2e;
+  $('chatSec').innerHTML=c.id==='ALL'
+    ? (groupKey?'Encrypted with the group passphrase.':'Not encrypted. Set a group passphrase in Settings to encrypt.')
+    : (!c.e2e?'Not encrypted.':p&&p.key?`End-to-end encrypted. Safety code <span class="code">${p.safety}</span>: check it matches on both phones.`:'End-to-end encrypted once the phones have seen each other.');
+  const box=$('msgs'), atEnd=box.scrollHeight-box.scrollTop-box.clientHeight<40;
+  box.innerHTML=c.msgs.length?c.msgs.map(m=>m.dir==='out'
+      ?`<div class="msg out">${esc(m.text)}<span class="meta">${clock(m.t)} · ${m.enc?'🔒 ':''}${esc(statusText(m))}</span></div>`
+      :`<div class="msg">${m.locked?`<i>🔒 Message ${esc(m.locked)}</i>`:esc(m.text)}<span class="meta">${c.id==='ALL'?esc(m.name||m.from)+' · ':''}${clock(m.t)}${m.enc?' · 🔒':''}</span></div>`).join('')
+    :`<p class="empty">${c.id==='ALL'?'Messages here go to every phone that reads your code.':'No messages yet.'}</p>`;
+  if(atEnd) box.scrollTop=box.scrollHeight;
+  updateStatus();
+}
+function statusText(m){ return m.status==='waiting'?'waiting for their key':m.status==='delivered'?'delivered ✓✓':m.status==='sending'?'sending…':m.status; }
+$('composer').addEventListener('submit',e=>{ e.preventDefault(); const t=$('msgInput').value; if(!t.trim()) return; $('msgInput').value=''; send(t); });
+$('e2e').onchange=()=>{ const c=chats.get(current); c.e2e=$('e2e').checked; save(); render(); };
+$('nameIn').value=myName;
+$('nameIn').onchange=()=>{ myName=$('nameIn').value.trim().slice(0,16)||('Phone '+myId.slice(0,3)); $('nameIn').value=myName; LS.set('qrchat-name',myName); $('myName').textContent=myName; };
+$('btnNewChat').onclick=()=>{ const id=$('newId').value.trim().toUpperCase(); if(!/^[0-9A-F]{6}$/.test(id)||id===myId||id===ALL){ $('newId').setCustomValidity?.('Enter a 6-character ID'); return; }
+  chatFor(id); current=id; $('newId').value=''; save(); render(); };
+$('groupPass').onchange=()=>setGroupPass($('groupPass').value).then(render);
+let clearArmed=0;
+$('btnClear').onclick=()=>{ if(Date.now()-clearArmed<4000){ chats.clear(); chats.set('ALL',{id:'ALL',title:'Everyone',msgs:[],unread:0,e2e:false}); current='ALL'; out=[]; waitingOut=[]; pendingIn=[]; save(); render(); clearArmed=0; $('btnClear').textContent='Clear all chats'; }
+  else{ clearArmed=Date.now(); $('btnClear').textContent='Tap again to clear'; setTimeout(()=>{ if(Date.now()-clearArmed>=4000) $('btnClear').textContent='Clear all chats'; },4100); } };
+['lvl','ecc','fps'].forEach(id=>$(id).addEventListener('change',()=>{ if(id==='ecc') fillLevels(); startStream(); }));
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden){ const c=chats.get(current); if(c&&c.unread){ c.unread=0; render(); } } });
+
+$('myId').textContent=myId; $('myName').textContent=myName;
+fillLevels(); render();
+keysReady.then(startStream);
+</script>
+</body>
+</html>
