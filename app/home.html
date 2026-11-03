@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>QR Lab</title>
+<style>
+:root{--bg:#f3f5f7;--surface:#fff;--fg:#14181d;--muted:#5d6874;--line:#d9dee4;--accent:#0a62b8}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1317;--surface:#171c22;--fg:#e6eaee;--muted:#95a0ab;--line:#2a323b;--accent:#4f9cf0;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:560px;margin:0 auto;padding:calc(24px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) 32px max(16px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:12px}
+h1{font-size:24px;margin:0}
+p{margin:0;color:var(--muted);font-size:14px}
+a.tool{display:flex;flex-direction:column;gap:2px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--surface);color:var(--fg);text-decoration:none}
+a.tool b{font-size:17px}
+a.tool span{color:var(--muted);font-size:14px}
+a.tool:active{border-color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+  <h1>QR Lab</h1>
+  <p>Screen-to-camera links between phones: no Wi-Fi or Bluetooth needed.</p>
+  <a class="tool" href="chat/index.html"><b>QR Chat</b><span>Encrypted text chat between phones facing each other.</span></a>
+  <a class="tool" href="quiz/index.html"><b>Quiz</b><span>Receive a locked quiz from the projector and open it with your group code.</span></a>
+  <a class="tool" href="transfer/index.html"><b>File transfer</b><span>Send or receive a file as a stream of QR codes.</span></a>
+  <a class="tool" href="multi/index.html"><b>Multiplex lab</b><span>Color, tile and layered schemes, distance test and experiment log.</span></a>
+  <p>The pages work offline. Saving results to GitHub needs internet.</p>
+</main>
+</body>
+</html>

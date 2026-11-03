@@ -1,0 +1,15 @@
+{
+  "name": "qr-lab-app",
+  "private": true,
+  "description": "Android app for the QR transfer pages (Capacitor shell around the web pages)",
+  "scripts": { "prepare-www": "node prepare.mjs" },
+  "dependencies": {
+    "@capacitor/android": "7.6.9",
+    "@capacitor/cli": "7.6.9",
+    "@capacitor/core": "7.6.9",
+    "@capacitor/filesystem": "7.1.9",
+    "@capacitor/share": "7.0.4",
+    "jsqr": "1.4.0",
+    "qrcode-generator": "1.4.4"
+  }
+}

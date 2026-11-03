@@ -1,0 +1,7 @@
+{
+  "appId": "com.amro2021.qrlab",
+  "appName": "QR Lab",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "android": { "allowMixedContent": false }
+}
