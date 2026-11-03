@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>QR Lab for Android</title>
+<style>
+:root{--bg:#f3f5f7;--surface:#fff;--fg:#14181d;--muted:#5d6874;--line:#d9dee4;--accent:#0a62b8}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1317;--surface:#171c22;--fg:#e6eaee;--muted:#95a0ab;--line:#2a323b;--accent:#4f9cf0;color-scheme:dark}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:560px;margin:0 auto;padding:24px 16px 40px;display:flex;flex-direction:column;gap:14px}
+h1{font-size:24px;margin:0}
+a.btn{display:block;text-align:center;padding:14px;border-radius:12px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}
+ol{margin:0;padding-left:22px}
+.note{color:var(--muted);font-size:14px;margin:0}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+  <h1>QR Lab for Android</h1>
+  <p class="note">QR Chat, Quiz, File transfer and the Multiplex lab in one app that works offline.</p>
+  <a class="btn" href="qr-lab.apk" download>Download the app (APK)</a>
+  <p class="note" id="ver"></p>
+  <ol>
+    <li>Open the downloaded file. Android asks to allow installs from your browser: allow it once.</li>
+    <li>Tap <b>Install</b>. If Play Protect warns about an unknown app, choose <b>Install anyway</b>.</li>
+    <li>Open <b>QR Lab</b> and allow the camera when asked.</li>
+  </ol>
+  <p class="note">To update, download and install again over the old version. iPhone: use the website instead, <a href="../">amro2021.github.io/qr-transfer</a>.</p>
+</main>
+<script>fetch('version.txt').then(r=>r.ok?r.text():'').then(t=>{document.getElementById('ver').textContent=t;}).catch(()=>{});</script>
+</body>
+</html>
